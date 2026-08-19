@@ -1,0 +1,29 @@
+node_modules/
+lib/
+coverage/
+*.log
+.DS_Store
+.idea
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.tgz
+
+# Local DSH and temporary state
+.dsh/
+.dsh-cos/
+.tmp-*
+
+# Publish the fixed Tencent Cloud CLI runtime dependencies.
+!runtime/
+!runtime/tencentcloud-cos/
+!runtime/tencentcloud-cos/scripts/
+!runtime/tencentcloud-cos/scripts/lib/
+!runtime/tencentcloud-cos/scripts/lib/*.mjs

@@ -1,0 +1,2135 @@
+#!/usr/bin/env node
+/**
+ * 腾讯云 COS Node.js SDK 统一操作脚本
+ * 基于 cos-nodejs-sdk-v5，覆盖 COS 存储 + 数据万象(CI) 全部能力
+ *
+ * 依赖：npm install cos-nodejs-sdk-v5
+ * KIKI=1 时启用严格模式并隐藏部分功能。
+ * 凭证来源与模式无关：
+ *   本地凭证：TENCENT_COS_SECRET_ID / TENCENT_COS_SECRET_KEY / TENCENT_COS_TOKEN
+ *   运行时凭证：TENCENTCLOUD_SECRET_ID / TENCENTCLOUD_SECRET_KEY / TENCENTCLOUD_TOKEN
+ *   通用配置：TENCENT_COS_REGION / TENCENT_COS_BUCKET / TENCENT_COS_DATASET_NAME
+ *
+ * 用法：node cos_node.mjs <action> [options]
+ */
+
+import { randomBytes } from 'node:crypto';
+import { createRequire } from 'module';
+import { createReadStream, createWriteStream, existsSync, readFileSync, statSync, writeFileSync, unlinkSync, chmodSync } from 'fs';
+import { basename, resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { pipeline } from 'stream/promises';
+import {
+  assertActionAllowed,
+  assertCredentials,
+  decryptEnvBuffer,
+  encryptEnvBuffer,
+  getHiddenActions,
+  getRuntimeCredentials,
+  getRuntimeMode,
+} from './lib/ci_client.mjs';
+import {
+  createAsyncContentRecognitionBucket,
+  createAsyncImageProcessBucket,
+  createCiService,
+  deleteAsyncContentRecognitionBucket,
+  deleteAsyncImageProcessBucket,
+  deleteCiService,
+  describeAsyncContentRecognitionBuckets,
+  describeAsyncImageProcessBuckets,
+} from './lib/ci_service_lifecycle.mjs';
+import {
+  requireRuntimeAppId,
+  requireRuntimeRegion,
+  resolveDatasetName,
+  resolveMetaInsightHost,
+  resolveRuntimeScope,
+} from './lib/runtime_scope.mjs';
+
+const requestedAction = process.argv[2];
+const requestedArgs = process.argv.slice(3);
+const opts = parseArgs(requestedArgs);
+const runtimeScope = resolveRuntimeScope(opts, process.env);
+const requestedMethodIndex = requestedArgs.indexOf('--method');
+const requestedMethod = requestedMethodIndex >= 0
+  ? requestedArgs[requestedMethodIndex + 1]
+  : undefined;
+try {
+  assertActionAllowed(requestedAction, process.env, { method: requestedMethod });
+} catch (err) {
+  console.error(JSON.stringify({
+    success: false,
+    action: requestedAction,
+    mode: getRuntimeMode(),
+    error: err.message || String(err),
+    code: err.code,
+  }));
+  process.exit(1);
+}
+
+const require = createRequire(import.meta.url);
+const COS = require('cos-nodejs-sdk-v5');
+
+// ========== 凭证加解密工具 ==========
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPath = resolve(__dirname, '..', '.env');
+const envEncPath = resolve(__dirname, '..', '.env.enc');
+
+// ========== 统一运行时凭证 ==========
+// KIKI=1 只控制功能隐藏；凭证按运行环境中实际存在的变量自动选择。
+
+const runtimeMode = getRuntimeMode();
+const credentials = getRuntimeCredentials();
+
+try {
+  assertCredentials(credentials);
+} catch (err) {
+  console.error(JSON.stringify({
+    success: false,
+    error: `缺少凭证：${err.message}。Region/Bucket 可通过环境变量或 --region/--bucket 参数指定。`,
+    code: err.code,
+    mode: runtimeMode,
+  }));
+  process.exit(1);
+}
+
+const SecretId = credentials.secretId;
+const SecretKey = credentials.secretKey;
+const Token = credentials.token;
+
+// 显式 Action 参数优先，其次使用插件传入的通用默认值。
+const Region = runtimeScope.region;
+const Bucket = runtimeScope.bucket;
+const DatasetName = runtimeScope.datasetName;
+const Domain = process.env.TENCENT_COS_DOMAIN;
+const ServiceDomain = process.env.TENCENT_COS_SERVICE_DOMAIN;
+const Protocol = process.env.TENCENT_COS_PROTOCOL;
+
+const cosOptions = { SecretId, SecretKey };
+cosOptions.UserAgent = "skills/node_sdk_cos";
+if (Token) {
+  cosOptions.SecurityToken = Token;
+}
+if (Domain) {
+  cosOptions.Domain = Domain;
+}
+if (ServiceDomain) {
+  cosOptions.ServiceDomain = ServiceDomain;
+}
+if (Protocol) {
+  cosOptions.Protocol = Protocol;
+}
+
+const cos = new COS(cosOptions);
+
+// ========== 工具函数 ==========
+
+function parseArgs(args) {
+  const result = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2);
+      const next = args[i + 1];
+      if (next && !next.startsWith('--')) {
+        result[key] = next;
+        i++;
+      } else {
+        result[key] = true;
+      }
+    }
+  }
+  return result;
+}
+
+function output(data) {
+  console.log(JSON.stringify(data, null, 2));
+}
+
+function cosPromise(method, params) {
+  return new Promise((resolveP, rejectP) => {
+    cos[method]({ Bucket, Region, ...params }, (err, data) => {
+      if (err) {
+        rejectP(err);
+      } else {
+        resolveP(data);
+      }
+    });
+  });
+}
+
+function cosRequestPromise(params) {
+  return new Promise((resolveP, rejectP) => {
+    cos.request(params, (err, data) => {
+      if (err) {
+        rejectP(err);
+      } else {
+        resolveP(data);
+      }
+    });
+  });
+}
+
+function generateCode(length = 6) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = randomBytes(length);
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += chars[bytes[i] % chars.length];
+  }
+  return code;
+}
+
+function generateOutputFileId(objectKey) {
+  const now = new Date();
+  const date = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('');
+  if (objectKey) {
+    const lastDot = objectKey.lastIndexOf('.');
+    const base = lastDot === -1 ? objectKey : objectKey.substring(0, lastDot);
+    return encodeURIComponent(`${date}_${base}_${generateCode()}`);
+  }
+  return encodeURIComponent(`${date}_${generateCode()}`);
+}
+
+function ciHost() {
+  return `${Bucket}.ci.${Region}.myqcloud.com`;
+}
+
+function appId() {
+  return requireRuntimeAppId(runtimeScope);
+}
+
+function metaInsightRegion() {
+  return requireRuntimeRegion(runtimeScope);
+}
+
+function metaInsightHost() {
+  return resolveMetaInsightHost(runtimeScope);
+}
+
+async function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ========== COS 存储操作 ==========
+
+async function upload(opts) {
+  const filePath = opts.file;
+  const key = opts.key || basename(filePath);
+  if (!filePath) {
+    throw new Error('缺少 --file 参数');
+  }
+  if (!existsSync(filePath)) {
+    throw new Error(`文件不存在：${filePath}`);
+  }
+  const params = {
+    Key: key,
+    Body: createReadStream(filePath),
+    ContentLength: statSync(filePath).size,
+  };
+  // 自定义元数据：--meta '{"author":"example","project":"demo"}'
+  if (opts.meta) {
+    const meta = typeof opts.meta === 'string' ? JSON.parse(opts.meta) : opts.meta;
+    params.Headers = {};
+    for (const [k, v] of Object.entries(meta)) {
+      params.Headers[`x-cos-meta-${k}`] = String(v);
+    }
+  }
+  const data = await cosPromise('putObject', params);
+  output({ success: true, action: 'upload', key, etag: data.ETag, location: data.Location, statusCode: data.statusCode });
+}
+
+async function putString(opts) {
+  const { content, key } = opts;
+  const contentType = opts['content-type'] || 'text/plain';
+  if (!content) {
+    throw new Error('缺少 --content 参数');
+  }
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const params = { Key: key, Body: content, ContentType: contentType };
+  // 自定义元数据：--meta '{"author":"example","project":"demo"}'
+  if (opts.meta) {
+    const meta = typeof opts.meta === 'string' ? JSON.parse(opts.meta) : opts.meta;
+    params.Headers = {};
+    for (const [k, v] of Object.entries(meta)) {
+      params.Headers[`x-cos-meta-${k}`] = String(v);
+    }
+  }
+  const data = await cosPromise('putObject', params);
+  output({ success: true, action: 'put-string', key, etag: data.ETag, location: data.Location, statusCode: data.statusCode });
+}
+
+async function download(opts) {
+  const { key } = opts;
+  const outputPath = opts.output || basename(key);
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosPromise('getObject', { Key: key });
+  const resolvedPath = resolve(outputPath);
+  const ws = createWriteStream(resolvedPath);
+  if (data.Body instanceof Buffer) {
+    ws.write(data.Body);
+    ws.end();
+  } else if (data.Body && typeof data.Body.pipe === 'function') {
+    await pipeline(data.Body, ws);
+  } else {
+    ws.write(String(data.Body));
+    ws.end();
+  }
+  output({ success: true, action: 'download', key, savedTo: resolvedPath, contentLength: data.headers?.['content-length'], statusCode: data.statusCode });
+}
+
+async function list(opts) {
+  const prefix = opts.prefix || '';
+  const maxKeys = parseInt(opts['max-keys'], 10) || 100;
+  const data = await cosPromise('getBucket', { Prefix: prefix, MaxKeys: maxKeys });
+  const files = (data.Contents || []).map(item => ({
+    key: item.Key,
+    size: parseInt(item.Size, 10),
+    lastModified: item.LastModified,
+    etag: item.ETag,
+    storageClass: item.StorageClass,
+  }));
+  output({ success: true, action: 'list', prefix, count: files.length, isTruncated: data.IsTruncated === 'true', files });
+}
+
+async function signUrl(opts) {
+  const { key } = opts;
+  const expires = parseInt(opts.expires, 10) || 3600;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const url = await new Promise((resolveP, rejectP) => {
+    cos.getObjectUrl({ Bucket, Region, Key: key, Expires: expires, Sign: true }, (err, data) => {
+      if (err) {
+        rejectP(err);
+      } else {
+        resolveP(data.Url);
+      }
+    });
+  });
+  output({ success: true, action: 'sign-url', key, expires, url });
+}
+
+async function deleteObject(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosPromise('deleteObject', { Key: key });
+  output({ success: true, action: 'delete', key, statusCode: data.statusCode });
+}
+
+async function head(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosPromise('headObject', { Key: key });
+  const h = data.headers || {};
+  // 提取自定义元数据（x-cos-meta-* headers）
+  const customMeta = {};
+  for (const [k, v] of Object.entries(h)) {
+    if (k.startsWith('x-cos-meta-')) {
+      customMeta[k.replace('x-cos-meta-', '')] = v;
+    }
+  }
+  output({
+    success: true, action: 'head', key,
+    contentLength: parseInt(h['content-length'], 10),
+    contentType: h['content-type'],
+    etag: h.etag,
+    lastModified: h['last-modified'],
+    storageClass: h['x-cos-storage-class'] || 'STANDARD',
+    versionId: h['x-cos-version-id'] || undefined,
+    crc64: h['x-cos-hash-crc64ecma'] || undefined,
+    requestId: h['x-cos-request-id'] || undefined,
+    acceptRanges: h['accept-ranges'] || undefined,
+    server: h.server || undefined,
+    customMetadata: Object.keys(customMeta).length > 0 ? customMeta : undefined,
+    statusCode: data.statusCode,
+  });
+}
+
+// ========== COS 存储桶管理 ==========
+
+async function listBuckets() {
+  const data = await new Promise((resolveP, rejectP) => {
+    cos.getService({}, (err, data) => err ? rejectP(err) : resolveP(data));
+  });
+  const buckets = (data.Buckets || []).map(b => ({
+    name: b.Name,
+    region: b.Location,
+    createDate: b.CreationDate,
+  }));
+  output({ success: true, action: 'list-buckets', count: buckets.length, buckets });
+}
+
+async function createBucket(opts) {
+  const bucketName = opts.bucket || opts.name;
+  const region = opts.region || Region;
+  if (!bucketName) {
+    throw new Error('缺少 --bucket 参数（格式 name-appid）');
+  }
+  const data = await new Promise((resolveP, rejectP) => {
+    cos.putBucket({ Bucket: bucketName, Region: region }, (err, data) => err ? rejectP(err) : resolveP(data));
+  });
+  output({ success: true, action: 'create-bucket', bucket: bucketName, region, data });
+}
+
+async function headBucket(opts) {
+  const bucketName = opts.bucket || Bucket;
+  const region = opts.region || Region;
+  const data = await new Promise((resolveP, rejectP) => {
+    cos.headBucket({ Bucket: bucketName, Region: region }, (err, data) => err ? rejectP(err) : resolveP(data));
+  });
+  output({ success: true, action: 'head-bucket', bucket: bucketName, region, data });
+}
+
+async function getBucketAcl() {
+  const data = await cosPromise('getBucketAcl', {});
+  output({ success: true, action: 'get-bucket-acl', data });
+}
+
+async function putBucketAcl(opts) {
+  const acl = opts.acl || 'private';
+  const data = await cosPromise('putBucketAcl', { ACL: acl });
+  output({ success: true, action: 'put-bucket-acl', acl, data });
+}
+
+async function getBucketCors() {
+  const data = await cosPromise('getBucketCors', {});
+  output({ success: true, action: 'get-bucket-cors', data });
+}
+
+async function putBucketCors(opts) {
+  const origin = opts.origin || '*';
+  const methods = (opts.methods || 'GET,POST,PUT,DELETE,HEAD').split(',');
+  const data = await cosPromise('putBucketCors', {
+    CORSRules: [{ AllowedOrigin: [origin], AllowedMethod: methods, AllowedHeader: ['*'], MaxAgeSeconds: 600 }],
+  });
+  output({ success: true, action: 'put-bucket-cors', data });
+}
+
+async function getBucketTagging() {
+  try {
+    const data = await cosPromise('getBucketTagging', {});
+    output({ success: true, action: 'get-bucket-tagging', data });
+  } catch (err) {
+    if (err.code === 'NoSuchTagSet') {
+      output({ success: true, action: 'get-bucket-tagging', data: { Tags: [] } });
+    } else {
+      throw err;
+    }
+  }
+}
+
+async function putBucketTagging(opts) {
+  const tags = opts.tags ? JSON.parse(opts.tags) : [];
+  if (!tags.length) {
+    throw new Error('缺少 --tags 参数（JSON 数组，如 \'[{"Key":"env","Value":"prod"}]\'）');
+  }
+  const data = await cosPromise('putBucketTagging', { Tags: tags });
+  output({ success: true, action: 'put-bucket-tagging', data });
+}
+
+async function getBucketVersioning() {
+  const data = await cosPromise('getBucketVersioning', {});
+  output({ success: true, action: 'get-bucket-versioning', data });
+}
+
+async function getBucketLifecycle() {
+  try {
+    const data = await cosPromise('getBucketLifecycle', {});
+    output({ success: true, action: 'get-bucket-lifecycle', data });
+  } catch (err) {
+    if (err.code === 'NoSuchLifecycleConfiguration') {
+      output({ success: true, action: 'get-bucket-lifecycle', data: { Rules: [] } });
+    } else {
+      throw err;
+    }
+  }
+}
+
+async function getBucketLocation() {
+  const data = await cosPromise('getBucketLocation', {});
+  output({ success: true, action: 'get-bucket-location', data });
+}
+
+async function copyObject(opts) {
+  const { source, key } = opts;
+  if (!source || !key) {
+    throw new Error('缺少 --source 和 --key 参数。--source 格式：bucket.cos.region.myqcloud.com/sourceKey');
+  }
+  const data = await cosPromise('putObjectCopy', { Key: key, CopySource: source });
+  output({ success: true, action: 'copy-object', key, data });
+}
+
+async function deleteMultipleObjects(opts) {
+  const keys = opts.keys ? JSON.parse(opts.keys) : [];
+  if (!keys.length) {
+    throw new Error('缺少 --keys 参数（JSON 数组，如 \'["file1.txt","file2.txt"]\'）');
+  }
+  const objects = keys.map(k => ({ Key: k }));
+  const data = await cosPromise('deleteMultipleObject', { Objects: objects });
+  output({ success: true, action: 'delete-multiple', count: keys.length, data });
+}
+
+// ========== COS 补充只读操作 ==========
+
+function requireCosReadOption(opts, name) {
+  const value = opts[name];
+  if (value === undefined || value === true || value === '') {
+    throw new Error(`缺少 --${name} 参数`);
+  }
+  return value;
+}
+
+function compactCosReadParams(params) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
+}
+
+function parseCosReadInteger(opts, name) {
+  if (opts[name] === undefined) {
+    return undefined;
+  }
+  const value = Number(opts[name]);
+  if (!Number.isInteger(value)) {
+    throw new Error(`--${name} 必须是整数`);
+  }
+  return value;
+}
+
+function createCosSdkReadAction(action, method, buildParams = () => ({})) {
+  return async opts => {
+    const data = await cosPromise(method, buildParams(opts));
+    output({ success: true, action, data });
+  };
+}
+
+function createCosSubresourceReadAction(action, subresource, buildRequest = () => ({})) {
+  return async opts => {
+    const request = buildRequest(opts);
+    const data = await cosRequestPromise({
+      Bucket,
+      Region,
+      Method: 'GET',
+      Key: request.Key || '',
+      Action: subresource,
+      Query: request.Query,
+    });
+    output({ success: true, action, data });
+  };
+}
+
+async function getBucketObjectLock() {
+  const action = 'get-bucket-object-lock';
+  try {
+    const data = await cosRequestPromise({
+      Bucket,
+      Region,
+      Method: 'GET',
+      Key: '',
+      Action: 'object-lock',
+    });
+    output({ success: true, action, data });
+  } catch (err) {
+    if (err.code !== 'NoSuchBucketObjectLockConfiguration') {
+      throw err;
+    }
+    output({
+      success: true,
+      action,
+      data: {
+        configured: false,
+        objectLockEnabled: false,
+        emptyCode: err.code,
+      },
+    });
+  }
+}
+
+const cosBucketReadActions = {
+  'get-bucket-policy': createCosSdkReadAction('get-bucket-policy', 'getBucketPolicy'),
+  'get-bucket-replication': createCosSdkReadAction('get-bucket-replication', 'getBucketReplication'),
+  'get-bucket-website': createCosSdkReadAction('get-bucket-website', 'getBucketWebsite'),
+  'get-bucket-referer': createCosSdkReadAction('get-bucket-referer', 'getBucketReferer'),
+  'get-bucket-domain': createCosSdkReadAction('get-bucket-domain', 'getBucketDomain'),
+  'get-bucket-origin': createCosSdkReadAction('get-bucket-origin', 'getBucketOrigin'),
+  'get-bucket-logging': createCosSdkReadAction('get-bucket-logging', 'getBucketLogging'),
+  'get-bucket-inventory': createCosSdkReadAction('get-bucket-inventory', 'getBucketInventory', opts => ({
+    Id: requireCosReadOption(opts, 'id'),
+  })),
+  'list-bucket-inventory': createCosSdkReadAction('list-bucket-inventory', 'listBucketInventory', opts => compactCosReadParams({
+    ContinuationToken: opts['continuation-token'],
+  })),
+  'get-bucket-accelerate': createCosSdkReadAction('get-bucket-accelerate', 'getBucketAccelerate'),
+  'get-bucket-encryption': createCosSdkReadAction('get-bucket-encryption', 'getBucketEncryption'),
+  'get-bucket-intelligent-tiering': createCosSubresourceReadAction('get-bucket-intelligent-tiering', 'intelligent-tiering', opts => ({
+    Query: compactCosReadParams({ id: opts.id }),
+  })),
+  'get-bucket-access-monitor': createCosSubresourceReadAction('get-bucket-access-monitor', 'accessmonitor'),
+  'get-bucket-logging-analysis': createCosSubresourceReadAction('get-bucket-logging-analysis', 'logginganalysis'),
+  'get-bucket-notification': createCosSubresourceReadAction('get-bucket-notification', 'notification'),
+  'get-bucket-object-lock': getBucketObjectLock,
+  'get-bucket-domain-certificate': createCosSubresourceReadAction('get-bucket-domain-certificate', 'domaincertificate', opts => ({
+    Query: { domainname: requireCosReadOption(opts, 'domain') },
+  })),
+  'get-bucket-strict-signature': createCosSubresourceReadAction('get-bucket-strict-signature', 'strict-signature'),
+  'get-bucket-bandwidth-quota': createCosSubresourceReadAction('get-bucket-bandwidth-quota', 'bandwidth-quota'),
+  'get-bucket-response-control': createCosSubresourceReadAction('get-bucket-response-control', 'response-control'),
+};
+
+const cosObjectReadActions = {
+  'list-object-versions': createCosSdkReadAction('list-object-versions', 'listObjectVersions', opts => compactCosReadParams({
+    Prefix: opts.prefix,
+    Delimiter: opts.delimiter,
+    KeyMarker: opts['key-marker'],
+    VersionIdMarker: opts['version-id-marker'],
+    MaxKeys: parseCosReadInteger(opts, 'max-keys'),
+    EncodingType: opts['encoding-type'],
+  })),
+  'get-object-acl': createCosSdkReadAction('get-object-acl', 'getObjectAcl', opts => compactCosReadParams({
+    Key: requireCosReadOption(opts, 'key'),
+    VersionId: opts['version-id'],
+  })),
+  'get-object-tagging': createCosSdkReadAction('get-object-tagging', 'getObjectTagging', opts => compactCosReadParams({
+    Key: requireCosReadOption(opts, 'key'),
+    VersionId: opts['version-id'],
+  })),
+  'get-object-retention': createCosSubresourceReadAction('get-object-retention', 'retention', opts => ({
+    Key: requireCosReadOption(opts, 'key'),
+    Query: compactCosReadParams({ versionId: opts['version-id'] }),
+  })),
+  'get-symlink': createCosSubresourceReadAction('get-symlink', 'symlink', opts => ({
+    Key: requireCosReadOption(opts, 'key'),
+    Query: compactCosReadParams({ versionId: opts['version-id'] }),
+  })),
+  'list-multipart-uploads': createCosSdkReadAction('list-multipart-uploads', 'multipartList', opts => compactCosReadParams({
+    Prefix: opts.prefix,
+    Delimiter: opts.delimiter,
+    KeyMarker: opts['key-marker'],
+    UploadIdMarker: opts['upload-id-marker'],
+    MaxUploads: parseCosReadInteger(opts, 'max-uploads'),
+    EncodingType: opts['encoding-type'],
+  })),
+  'list-multipart-parts': createCosSdkReadAction('list-multipart-parts', 'multipartListPart', opts => compactCosReadParams({
+    Key: requireCosReadOption(opts, 'key'),
+    UploadId: requireCosReadOption(opts, 'upload-id'),
+    PartNumberMarker: opts['part-number-marker'],
+    MaxParts: parseCosReadInteger(opts, 'max-parts'),
+    EncodingType: opts['encoding-type'],
+  })),
+  'options-object': createCosSdkReadAction('options-object', 'optionsObject', opts => ({
+    Key: requireCosReadOption(opts, 'key'),
+    Origin: requireCosReadOption(opts, 'origin'),
+    AccessControlRequestMethod: requireCosReadOption(opts, 'request-method').toUpperCase(),
+    AccessControlRequestHeaders: opts['request-headers'] || '',
+    Headers: {},
+  })),
+};
+
+// ========== CI 服务生命周期 ==========
+
+function outputCiServiceLifecycleResult(action, result) {
+  if (!result.ok) {
+    const error = new Error(result.error?.message || 'CI 服务生命周期请求失败');
+    error.code = result.error?.code || 'RequestFailed';
+    error.request = result.request;
+    throw error;
+  }
+  const { ok, action: apiAction, ...data } = result;
+  output({ success: ok, action, apiAction, ...data });
+}
+
+function createCiServiceLifecycleAction(action, operation, service) {
+  return async () => {
+    const handler = operation === 'create' ? createCiService : deleteCiService;
+    const result = await handler({
+      service,
+      bucket: Bucket,
+      region: Region,
+      creds: credentials,
+    });
+    outputCiServiceLifecycleResult(action, result);
+  };
+}
+
+// ========== CI 图片基础处理 ==========
+
+function outputAsyncImageProcessResult(action, result) {
+  if (!result.ok) {
+    const error = new Error(result.error?.message || '图片处理异步服务请求失败');
+    error.code = result.error?.code || 'RequestFailed';
+    error.request = result.request;
+    throw error;
+  }
+  const { ok, action: apiAction, ...data } = result;
+  output({ success: ok, action, apiAction, ...data });
+}
+
+async function describeAsyncImageProcessBucketsAction(opts) {
+  const result = await describeAsyncImageProcessBuckets({
+    region: Region,
+    bucketNames: opts['bucket-names'] || Bucket,
+    bucketName: opts['bucket-name'],
+    pageNumber: opts['page-number'] || 1,
+    pageSize: opts['page-size'] || 10,
+    creds: credentials,
+  });
+  outputAsyncImageProcessResult('describe-async-image-process-buckets', result);
+}
+
+async function createAsyncImageProcessBucketAction() {
+  const result = await createAsyncImageProcessBucket({
+    bucket: Bucket,
+    region: Region,
+    creds: credentials,
+  });
+  outputAsyncImageProcessResult('create-async-image-process-bucket', result);
+}
+
+async function deleteAsyncImageProcessBucketAction() {
+  const result = await deleteAsyncImageProcessBucket({
+    bucket: Bucket,
+    region: Region,
+    creds: credentials,
+  });
+  outputAsyncImageProcessResult('delete-async-image-process-bucket', result);
+}
+
+async function imageInfo(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key, Action: 'imageInfo', RawBody: false,
+  });
+  output({ success: true, action: 'image-info', key, data });
+}
+
+async function watermarkFont(opts) {
+  const { key, text } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  if (!text) {
+    throw new Error('缺少 --text 参数');
+  }
+  const encodedText = Buffer.from(text)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  const rule = ['watermark/2', `text/${encodedText}`, 'scatype/3', 'spcent/20'].join('/');
+  const outFileId = generateOutputFileId(key);
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ rules: [{ fileid: outFileId, rule }] }) },
+  });
+  output({ success: true, action: 'watermark-font', key, data });
+}
+
+// ========== CI AI 图片处理 ==========
+
+async function assessQuality(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key, Query: { 'ci-process': 'AssessQuality' },
+  });
+  output({ success: true, action: 'assess-quality', key, data });
+}
+
+async function aiSuperResolution(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const outFileId = generateOutputFileId(key);
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ rules: [{ fileid: outFileId, rule: 'ci-process=AISuperResolution' }] }) },
+  });
+  output({ success: true, action: 'ai-super-resolution', key, data });
+}
+
+async function aiPicMatting(opts) {
+  const { key, width, height } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const outFileId = generateOutputFileId(key);
+  let rule = 'ci-process=AIImageCrop';
+  if (width) {
+    rule += `&width=${width}`;
+  }
+  if (height) {
+    rule += `&height=${height}`;
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ rules: [{ fileid: outFileId, rule }] }) },
+  });
+  output({ success: true, action: 'ai-pic-matting', key, data });
+}
+
+async function aiQrcode(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key, Query: { 'ci-process': 'QRcode', cover: 0 },
+  });
+  output({ success: true, action: 'ai-qrcode', key, data });
+}
+
+// ========== CI 文档处理 ==========
+
+async function createDocToPdfJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const lastDot = key.lastIndexOf('.');
+  const base = lastDot === -1 ? key : key.substring(0, lastDot);
+  const now = new Date();
+  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('');
+  const outObject = `${date}_\${SheetID}/${base}_pdf_${generateCode(6)}.pdf`;
+
+  const url = `https://${ciHost()}/doc_jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'DocProcess',
+      Input: { Object: key },
+      Operation: {
+        DocProcess: { TgtType: 'pdf' },
+        Output: { Bucket, Region, Object: outObject },
+      },
+    },
+  });
+
+  const createResult = await cosRequestPromise({ Key: 'doc_jobs', Method: 'POST', Url: url, Body: body, ContentType: 'application/xml' });
+  const jobsDetail = createResult?.Response?.JobsDetail;
+
+  if (jobsDetail?.Code === 'Failed') {
+    output({ success: false, action: 'create-doc-to-pdf-job', data: createResult });
+    return;
+  }
+  if (jobsDetail?.State === 'Success') {
+    output({ success: true, action: 'create-doc-to-pdf-job', data: createResult });
+    return;
+  }
+
+  const jobId = jobsDetail?.JobId;
+  if (!jobId) {
+    output({ success: true, action: 'create-doc-to-pdf-job', jobId: null, data: createResult });
+    return;
+  }
+
+  const maxAttempts = 10;
+  const interval = 2000;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) {
+      await sleep(interval);
+    }
+    const queryUrl = `https://${ciHost()}/doc_jobs/${jobId}`;
+    const qResult = await cosRequestPromise({ Bucket, Region, Method: 'GET', Key: `doc_jobs/${jobId}`, Url: queryUrl });
+    const detail = qResult?.Response?.JobsDetail;
+    if (detail?.Code === 'Success' && detail?.State === 'Success') {
+      output({ success: true, action: 'create-doc-to-pdf-job', jobId, data: qResult });
+      return;
+    }
+    if (detail?.Code === 'Failed') {
+      output({ success: false, action: 'create-doc-to-pdf-job', jobId, data: qResult });
+      return;
+    }
+  }
+  output({ success: false, action: 'create-doc-to-pdf-job', jobId, error: `轮询超时（${maxAttempts}次未完成）`, data: createResult });
+}
+
+async function describeDocProcessJob(opts) {
+  const jobId = opts['job-id'] || opts.jobId;
+  if (!jobId) {
+    throw new Error('缺少 --job-id 参数');
+  }
+  const url = `https://${ciHost()}/doc_jobs/${jobId}`;
+  const data = await cosRequestPromise({ Bucket, Region, Method: 'GET', Key: `doc_jobs/${jobId}`, Url: url });
+  output({ success: true, action: 'describe-doc-job', jobId, data });
+}
+
+// ========== CI 媒体处理 ==========
+
+async function createMediaSmartCoverJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const lastDot = key.lastIndexOf('.');
+  const base = lastDot === -1 ? key : key.substring(0, lastDot);
+  const outObject = `${base}_\${jobid}_\${number}`;
+  const url = `https://${ciHost()}/jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'SmartCover',
+      Input: { Object: key },
+      Operation: {
+        Output: { Bucket, Region, Object: outObject },
+        SmartCover: { Count: 1 },
+      },
+    },
+  });
+
+  const createResult = await cosRequestPromise({ Key: 'jobs', Method: 'POST', Url: url, Body: body, ContentType: 'application/xml' });
+  const jobsDetail = createResult?.Response?.JobsDetail;
+
+  if (jobsDetail?.Code === 'Failed') {
+    output({ success: false, action: 'create-media-smart-cover-job', data: createResult });
+    return;
+  }
+  if (jobsDetail?.State === 'Success') {
+    output({ success: true, action: 'create-media-smart-cover-job', data: createResult });
+    return;
+  }
+
+  const jobId = jobsDetail?.JobId;
+  if (!jobId) {
+    output({ success: true, action: 'create-media-smart-cover-job', jobId: null, data: createResult });
+    return;
+  }
+
+  const maxAttempts = 10;
+  const interval = 4000;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) {
+      await sleep(interval);
+    }
+    const queryUrl = `https://${ciHost()}/jobs/${jobId}`;
+    const qResult = await cosRequestPromise({ Bucket, Region, Method: 'GET', Key: `jobs/${jobId}`, Url: queryUrl });
+    const detail = qResult?.Response?.JobsDetail;
+    if (detail?.Code === 'Success' && detail?.State === 'Success') {
+      output({ success: true, action: 'create-media-smart-cover-job', jobId, data: qResult });
+      return;
+    }
+    if (detail?.Code === 'Failed') {
+      output({ success: false, action: 'create-media-smart-cover-job', jobId, data: qResult });
+      return;
+    }
+  }
+  output({ success: false, action: 'create-media-smart-cover-job', jobId, error: `轮询超时（${maxAttempts}次未完成）`, data: createResult });
+}
+
+async function describeMediaJob(opts) {
+  const jobId = opts['job-id'] || opts.jobId;
+  if (!jobId) {
+    throw new Error('缺少 --job-id 参数');
+  }
+  const url = `https://${ciHost()}/jobs/${jobId}`;
+  const data = await cosRequestPromise({ Bucket, Region, Method: 'GET', Key: `jobs/${jobId}`, Url: url });
+  output({ success: true, action: 'describe-media-job', jobId, data });
+}
+
+// ========== CI MetaInsight ==========
+//
+// 检索 Action 统一使用 --dataset-name；TENCENT_COS_DATASET_NAME 仅作为直接运行脚本时的通用缺省值。
+
+function resolveDataset(opts, fallback, label) {
+  const ds = resolveDatasetName(opts, fallback);
+  if (!ds) {
+    throw new Error(`缺少数据集名称。通过 --dataset-name 参数指定。${label}`);
+  }
+  return ds;
+}
+
+async function miRequest(apiKey, body) {
+  const region = metaInsightRegion();
+  const host = metaInsightHost();
+  const url = `https://${host}/${apiKey}`;
+  return cosRequestPromise({
+    Method: 'POST', Key: apiKey, Url: url, Body: JSON.stringify(body),
+    Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+  });
+}
+
+// 以图搜图（需 Official:ImageSearch 数据集）
+async function imageSearchPic(opts) {
+  const { uri } = opts;
+  if (!uri) {
+    throw new Error('缺少 --uri 参数');
+  }
+  const ds = resolveDataset(opts, DatasetName, '图片检索需要 Official:ImageSearch 模板数据集。');
+  const data = await miRequest('datasetquery/imagesearch', { DatasetName: ds, Mode: 'pic', URI: uri });
+  output({ success: true, action: 'image-search-pic', dataset: ds, region: metaInsightRegion(), data });
+}
+
+// 文本搜图（需 Official:ImageSearch 数据集）
+async function imageSearchText(opts) {
+  const { text } = opts;
+  if (!text) {
+    throw new Error('缺少 --text 参数');
+  }
+  const ds = resolveDataset(opts, DatasetName, '图片检索需要 Official:ImageSearch 模板数据集。');
+  const data = await miRequest('datasetquery/imagesearch', { DatasetName: ds, Mode: 'text', Text: text });
+  output({ success: true, action: 'image-search-text', dataset: ds, region: metaInsightRegion(), data });
+}
+
+// 兼容旧人脸搜索接口（需 Official:FaceSearch 数据集）；当前人脸粗搜使用 ci_api.mjs face-search。
+async function faceSearch(opts) {
+  const { uri } = opts;
+  if (!uri) {
+    throw new Error('缺少 --uri 参数');
+  }
+  const ds = resolveDataset(opts, DatasetName, '人脸搜索需要 Official:FaceSearch 模板数据集。');
+  const maxFaceNum = parseInt(opts['max-face-num'], 10) || 1;
+  const limit = parseInt(opts.limit, 10) || 10;
+  const threshold = parseInt(opts.threshold, 10) || 80;
+  const data = await miRequest('datasetquery/facesearch', {
+    DatasetName: ds, URI: uri, MaxFaceNum: maxFaceNum, Limit: limit, MatchThreshold: threshold,
+  });
+  output({ success: true, action: 'face-search', dataset: ds, region: metaInsightRegion(), data });
+}
+
+// 元数据检索 — 简单查询（需 Official:COSBasicMeta 或任意数据集）
+async function datasetSimpleQuery(opts) {
+  const ds = resolveDataset(opts, DatasetName, '元数据检索需要数据集名称。');
+  const query = opts.query ? JSON.parse(opts.query) : undefined;
+  const maxResults = parseInt(opts['max-results'], 10) || 100;
+  const sort = opts.sort;
+  const order = opts.order || 'desc';
+  const bodyObj = { DatasetName: ds, MaxResults: maxResults, Order: order };
+  if (query) {
+    bodyObj.Query = query;
+  }
+  if (sort) {
+    bodyObj.Sort = sort;
+  }
+  const data = await miRequest('datasetquery/simple', bodyObj);
+  output({ success: true, action: 'dataset-simple-query', dataset: ds, region: metaInsightRegion(), data });
+}
+
+// 多模态检索 — 文档检索（hybridsearch）
+async function hybridSearch(opts) {
+  const { text } = opts;
+  if (!text) {
+    throw new Error('缺少 --text 参数（检索文本）');
+  }
+  const ds = resolveDataset(opts, DatasetName, '多模态检索需要数据集名称。');
+  const templates = opts.templates || 'DocSearch';
+  const mode = opts.mode || 'text';
+  const limit = parseInt(opts.limit, 10) || 10;
+  const offset = parseInt(opts.offset, 10) || 0;
+  const threshold = parseInt(opts.threshold, 10) || 1;
+
+  const bodyObj = {
+    DatasetName: ds,
+    Mode: mode,
+    Templates: templates,
+    SearchText: text,
+    Offset: offset,
+    Limit: limit,
+    MatchThreshold: threshold,
+  };
+
+  if (opts.filter) {
+    try {
+      bodyObj.Filter = JSON.parse(opts.filter);
+    } catch {
+      throw new Error('--filter 参数必须是有效的 JSON 字符串');
+    }
+  }
+
+  const data = await miRequest('datasetquery/hybridsearch', bodyObj);
+  output({ success: true, action: 'hybrid-search', dataset: ds, templates, region: metaInsightRegion(), data });
+}
+
+// 列出数据集
+async function listDatasets(opts) {
+  const maxResults = parseInt(opts['max-results'], 10) || 100;
+  const prefix = opts.prefix || '';
+  const region = metaInsightRegion();
+  const key = 'datasets';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}?maxresults=${maxResults}${prefix ? `&prefix=${encodeURIComponent(prefix)}` : ''}`;
+  const data = await cosRequestPromise({
+    Method: 'GET', Key: key, Url: url,
+    Headers: { Accept: 'application/json' },
+  });
+  output({ success: true, action: 'list-datasets', region, data });
+}
+
+// 创建数据集
+async function createDataset(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  if (!name) {
+    throw new Error('缺少 --dataset-name 参数（数据集名称）');
+  }
+  const { template, description } = opts;
+  const tpl = template || 'Official:COSBasicMeta';
+  const region = metaInsightRegion();
+  const key = 'dataset';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}`;
+  const body = JSON.stringify({ DatasetName: name, TemplateId: tpl, Description: description || '' });
+  const data = await cosRequestPromise({
+    Method: 'POST', Key: key, Url: url, Body: body,
+    Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+  });
+  output({ success: true, action: 'create-dataset', name, template: tpl, region, data });
+}
+
+// 查询数据集详情
+async function describeDataset(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  if (!name) {
+    throw new Error('缺少 --dataset-name 参数（数据集名称）');
+  }
+  const region = metaInsightRegion();
+  const key = 'dataset';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}?datasetname=${encodeURIComponent(name)}&statistics=true`;
+  const data = await cosRequestPromise({
+    Method: 'GET', Key: key, Url: url,
+    Headers: { Accept: 'application/json' },
+  });
+  output({ success: true, action: 'describe-dataset', name, region, data });
+}
+
+// 绑定存储桶到数据集（Mode: 1=存量索引 0=增量索引，默认存量）
+async function createDatasetBinding(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  const uri = opts.uri || (Bucket ? `cos://${Bucket}` : undefined);
+  const mode = opts.mode !== undefined ? parseInt(opts.mode, 10) : 1;
+  if (!name) {
+    throw new Error('缺少 --dataset-name 参数（数据集名称）');
+  }
+  if (!uri) {
+    throw new Error('缺少 --uri 参数，且插件设置中没有默认 Bucket。');
+  }
+  const region = metaInsightRegion();
+  const key = 'datasetbinding';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}`;
+  const body = JSON.stringify({ DatasetName: name, URI: uri, Mode: mode });
+  const data = await cosRequestPromise({
+    Method: 'POST', Key: key, Url: url, Body: body,
+    Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+  });
+  output({ success: true, action: 'create-dataset-binding', name, uri, region, data });
+}
+
+// 查询数据集绑定关系
+async function describeDatasetBindings(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  if (!name) {
+    throw new Error('缺少 --dataset-name 参数（数据集名称）');
+  }
+  const region = metaInsightRegion();
+  const key = 'datasetbindings';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}?datasetname=${encodeURIComponent(name)}&maxresults=100`;
+  const data = await cosRequestPromise({
+    Method: 'GET', Key: key, Url: url,
+    Headers: { Accept: 'application/json' },
+  });
+  output({ success: true, action: 'describe-dataset-bindings', name, region, data });
+}
+
+// 创建文件元数据索引
+async function createFileMetaIndex(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  const uri = opts.uri;
+  if (!name) {
+    throw new Error('缺少 --dataset-name 参数（数据集名称）');
+  }
+  if (!uri) {
+    throw new Error('缺少 --uri 参数（文件地址，格式 cos://bucket/path）');
+  }
+  const region = metaInsightRegion();
+  const key = 'filemeta';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}`;
+  const fileObj = { URI: uri };
+  if (opts['media-type']) {
+    fileObj.MediaType = opts['media-type'];
+  }
+  if (opts['custom-id']) {
+    fileObj.CustomId = opts['custom-id'];
+  }
+  const body = JSON.stringify({ DatasetName: name, File: fileObj });
+  const data = await cosRequestPromise({
+    Method: 'POST', Key: key, Url: url, Body: body,
+    Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+  });
+  output({ success: true, action: 'create-file-meta-index', name, uri, region, data });
+}
+
+// 查询文件元数据索引
+async function describeFileMetaIndex(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  const uri = opts.uri;
+  if (!name || !uri) {
+    throw new Error('缺少 --dataset-name 和 --uri 参数');
+  }
+  const region = metaInsightRegion();
+  const key = 'filemeta';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}?datasetname=${encodeURIComponent(name)}&uri=${encodeURIComponent(uri)}`;
+  const data = await cosRequestPromise({
+    Method: 'GET', Key: key, Url: url,
+    Headers: { Accept: 'application/json' },
+  });
+  output({ success: true, action: 'describe-file-meta-index', name, uri, region, data });
+}
+
+// 删除文件元数据索引
+async function deleteFileMetaIndex(opts) {
+  const name = resolveDatasetName(opts, DatasetName);
+  const uri = opts.uri;
+  if (!name || !uri) {
+    throw new Error('缺少 --dataset-name 和 --uri 参数');
+  }
+  const region = metaInsightRegion();
+  const key = 'filemeta';
+  const host = metaInsightHost();
+  const url = `https://${host}/${key}`;
+  const body = JSON.stringify({ DatasetName: name, URI: uri });
+  const data = await cosRequestPromise({
+    Method: 'DELETE', Key: key, Url: url, Body: body,
+    Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+  });
+  output({ success: true, action: 'delete-file-meta-index', name, uri, region, data });
+}
+
+// ========== 快捷功能 ==========
+
+// 创建知识库：一键创建桶 + DocSearch 数据集 + 绑定
+async function createKnowledgeBase(opts) {
+  const name = opts.name;
+  if (!name) {
+    throw new Error('缺少 --name 参数（知识库名称，将用于存储桶和数据集命名）');
+  }
+
+  // 存储桶与 MetaInsight 数据集使用同一个显式或插件默认地域。
+  const kbRegion = metaInsightRegion();
+  const kbBucket = `${name}-${appId()}`;
+  const kbDataset = resolveDatasetName(opts, `${name}-docsearch`, { allowName: false });
+
+  const steps = [];
+  let hasError = false;
+
+  // 步骤 1：创建存储桶
+  try {
+    await new Promise((resolveP, rejectP) => {
+      cos.putBucket({ Bucket: kbBucket, Region: kbRegion }, (err, data) => err ? rejectP(err) : resolveP(data));
+    });
+    steps.push({ step: 1, action: '创建存储桶', status: 'success', bucket: kbBucket, region: kbRegion });
+  } catch (err) {
+    if (err.code === 'BucketAlreadyExists' || err.code === 'BucketAlreadyOwnedByYou') {
+      steps.push({ step: 1, action: '创建存储桶', status: 'exists', bucket: kbBucket, message: '存储桶已存在，继续' });
+    } else {
+      steps.push({ step: 1, action: '创建存储桶', status: 'failed', error: err.message || err.code });
+      hasError = true;
+    }
+  }
+
+  // 步骤 2：创建 DocSearch 数据集
+  if (!hasError) {
+    try {
+      const dsKey = 'dataset';
+      const dsHost = metaInsightHost();
+      const dsUrl = `https://${dsHost}/${dsKey}`;
+      const dsBody = JSON.stringify({
+        DatasetName: kbDataset,
+        TemplateId: 'Official:DocSearch',
+        Description: `知识库：${name}`,
+      });
+      await cosRequestPromise({
+        Method: 'POST', Key: dsKey, Url: dsUrl, Body: dsBody,
+        Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      });
+      steps.push({ step: 2, action: '创建数据集', status: 'success', dataset: kbDataset, template: 'Official:DocSearch', region: kbRegion });
+    } catch (err) {
+      const errMsg = err.message || String(err);
+      const errCode = err.statusCode || err.code;
+      // 数据集已存在时 API 返回 400，尝试查询确认
+      if (errCode === 400 || errCode === '400' || errMsg.includes('already exist') || errMsg.includes('AlreadyExist')) {
+        steps.push({ step: 2, action: '创建数据集', status: 'exists', dataset: kbDataset, message: '数据集已存在，继续' });
+      } else {
+        steps.push({ step: 2, action: '创建数据集', status: 'failed', error: errMsg });
+        hasError = true;
+      }
+    }
+  }
+
+  // 步骤 3：绑定存储桶到数据集
+  if (!hasError) {
+    try {
+      const bindKey = 'datasetbinding';
+      const bindHost = metaInsightHost();
+      const bindUrl = `https://${bindHost}/${bindKey}`;
+      const bindBody = JSON.stringify({ DatasetName: kbDataset, URI: `cos://${kbBucket}`, Mode: 1 });
+      await cosRequestPromise({
+        Method: 'POST', Key: bindKey, Url: bindUrl, Body: bindBody,
+        Headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      });
+      steps.push({ step: 3, action: '绑定存储桶', status: 'success', dataset: kbDataset, bucket: kbBucket });
+    } catch (err) {
+      const errMsg = err.message || String(err);
+      const errCode = err.statusCode || err.code;
+      if (errCode === 400 || errCode === '400' || errMsg.includes('bindingisexisted') || errMsg.includes('bindingis existed') || errMsg.includes('already bind')) {
+        steps.push({ step: 3, action: '绑定存储桶', status: 'exists', message: '绑定关系已存在' });
+      } else {
+        steps.push({ step: 3, action: '绑定存储桶', status: 'failed', error: errMsg });
+        hasError = true;
+      }
+    }
+  }
+
+  output({
+    success: !hasError,
+    action: 'create-knowledge-base',
+    knowledgeBase: {
+      name,
+      bucket: kbBucket,
+      bucketRegion: kbRegion,
+      dataset: kbDataset,
+      datasetRegion: kbRegion,
+      template: 'Official:DocSearch',
+    },
+    steps,
+    usage: hasError ? undefined : {
+      upload: `node cos_node.mjs upload --file /path/to/doc.pdf --key docs/doc.pdf --bucket ${kbBucket} --region ${kbRegion}`,
+      search: `node cos_node.mjs hybrid-search --text "你想检索的内容" --dataset-name ${kbDataset} --templates DocSearch --region ${kbRegion} --appid ${appId()}`,
+      note: '上传文件后，CI 会自动建立文档向量索引。索引建立需要几秒到几分钟，之后即可通过 hybrid-search 检索文档内容。',
+    },
+  });
+}
+
+// ========== 凭证加密管理 ==========
+
+async function encryptEnvAction() {
+  if (!existsSync(envPath)) {
+    // 兼容：如果 .env 不存在但 .env.enc 存在，说明已经加密过了
+    if (existsSync(envEncPath)) {
+      output({ success: true, action: 'encrypt-env', message: '凭证已处于加密状态（.env.enc 已存在，.env 不存在），无需重复加密。' });
+      return;
+    }
+    throw new Error('未找到 .env 文件，无法加密。请先使用 setup.sh --from-env --persist 创建 .env 文件。');
+  }
+  const plaintext = readFileSync(envPath, 'utf-8');
+  if (!plaintext.trim()) {
+    throw new Error('.env 文件为空，无需加密。');
+  }
+
+  // 如果已有 .env.enc，先备份再覆盖（兼容重新加密场景）
+  if (existsSync(envEncPath)) {
+    const backupPath = envEncPath + '.bak';
+    writeFileSync(backupPath, readFileSync(envEncPath));
+    chmodSync(backupPath, 0o600);
+  }
+
+  const encBuffer = encryptEnvBuffer(plaintext);
+  writeFileSync(envEncPath, encBuffer);
+  chmodSync(envEncPath, 0o600);
+  // 删除明文 .env
+  unlinkSync(envPath);
+
+  // 确保 .gitignore 包含 .env.enc
+  const gitignorePath = resolve(__dirname, '..', '.gitignore');
+  if (existsSync(gitignorePath)) {
+    const content = readFileSync(gitignorePath, 'utf-8');
+    const additions = [];
+    if (!content.includes('.env.enc')) {
+      additions.push('.env.enc');
+    }
+    if (!content.includes('.env.enc.bak')) {
+      additions.push('.env.enc.bak');
+    }
+    if (additions.length > 0) {
+      writeFileSync(gitignorePath, content.trimEnd() + '\n' + additions.join('\n') + '\n');
+    }
+  } else {
+    writeFileSync(gitignorePath, '.env\n.env.enc\n.env.enc.bak\n');
+  }
+
+  output({
+    success: true,
+    action: 'encrypt-env',
+    message: '凭证已加密。明文 .env 已删除，加密文件 .env.enc 已创建（权限 600）。',
+    encFile: envEncPath,
+    algorithm: 'AES-256-GCM',
+    keyDerivation: '基于 hostname + username + 项目路径 的 SHA-256 派生',
+    note: '加密文件绑定当前机器和用户，不可跨机器/用户使用。如需在新机器上使用，请重新 export 环境变量并 setup.sh --from-env --persist 后再加密。',
+  });
+}
+
+async function decryptEnvAction() {
+  if (!existsSync(envEncPath)) {
+    // 兼容：如果 .env.enc 不存在但 .env 存在，说明本来就是明文的
+    if (existsSync(envPath)) {
+      output({ success: true, action: 'decrypt-env', message: '凭证已处于明文状态（.env 已存在，.env.enc 不存在），无需解密。' });
+      return;
+    }
+    throw new Error('未找到 .env.enc 加密文件，也未找到 .env 明文文件。请先使用 setup.sh --from-env --persist 创建凭证。');
+  }
+  const encBuffer = readFileSync(envEncPath);
+  let plaintext;
+  try {
+    plaintext = decryptEnvBuffer(encBuffer);
+  } catch (err) {
+    throw new Error(`解密失败：密钥不匹配或文件损坏。可能是在其他机器/用户下创建的加密文件。${err.message}`);
+  }
+  writeFileSync(envPath, plaintext);
+  chmodSync(envPath, 0o600);
+
+  output({
+    success: true,
+    action: 'decrypt-env',
+    message: '凭证已解密还原为 .env 文件（权限 600）。加密文件 .env.enc 保留。',
+    envFile: envPath,
+    note: '如需删除加密文件：rm -f .env.enc',
+  });
+}
+
+// ========== CI 图片基础处理（扩展） ==========
+
+async function imageThumbnail(opts) {
+  const { key, width, height } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  let rule = 'imageMogr2/thumbnail/';
+  if (width && height) {
+    rule += `${width}x${height}`;
+  } else if (width) {
+    rule += `${width}x`;
+  } else if (height) {
+    rule += `x${height}`;
+  } else {
+    rule += '!50p';
+  }
+  const outFileId = generateOutputFileId(key);
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ is_pic_info: 1, rules: [{ fileid: outFileId, rule }] }) },
+  });
+  output({ success: true, action: 'image-thumbnail', key, data });
+}
+
+async function imageCrop(opts) {
+  const { key, width, height, gravity } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const w = width || '300';
+  const h = height || '300';
+  const g = gravity || 'center';
+  const rule = `imageMogr2/cut/${w}x${h}x0x0/gravity/${g}`;
+  const outFileId = generateOutputFileId(key);
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ is_pic_info: 1, rules: [{ fileid: outFileId, rule }] }) },
+  });
+  output({ success: true, action: 'image-crop', key, data });
+}
+
+async function imageRotate(opts) {
+  const { key, degree } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const rule = `imageMogr2/rotate/${degree || '90'}`;
+  const outFileId = generateOutputFileId(key);
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ is_pic_info: 1, rules: [{ fileid: outFileId, rule }] }) },
+  });
+  output({ success: true, action: 'image-rotate', key, data });
+}
+
+async function imageFormat(opts) {
+  const { key, format } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const fmt = format || 'webp';
+  const rule = `imageMogr2/format/${fmt}`;
+  const outFileId = generateOutputFileId(key);
+  const data = await cosRequestPromise({
+    Bucket, Region, Key: key, Method: 'POST', Action: 'image_process',
+    Headers: { 'Pic-Operations': JSON.stringify({ is_pic_info: 1, rules: [{ fileid: outFileId, rule }] }) },
+  });
+  output({ success: true, action: 'image-format', key, data });
+}
+
+// ========== CI 内容审核 ==========
+
+async function auditImage(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key,
+    Query: { 'ci-process': 'sensitive-content-recognition' },
+  });
+  output({ success: true, action: 'audit-image', key, data });
+}
+
+async function auditImageJob(opts) {
+  const { key, url: imageUrl } = opts;
+  if (!key && !imageUrl) {
+    throw new Error('缺少 --key 或 --url 参数');
+  }
+  const ciUrl = `https://${ciHost()}/image/auditing`;
+  const input = key ? { Object: key } : { Url: imageUrl };
+  const body = COS.util.json2xml({ Request: { Input: input, Conf: { BizType: '' } } });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'image/auditing', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'audit-image-job', data });
+}
+
+async function auditVideoJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/video/auditing`;
+  const body = COS.util.json2xml({ Request: { Input: { Object: key }, Conf: { BizType: '' } } });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'video/auditing', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'audit-video-job', data });
+}
+
+async function auditAudioJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/audio/auditing`;
+  const body = COS.util.json2xml({ Request: { Input: { Object: key }, Conf: { BizType: '' } } });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'audio/auditing', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'audit-audio-job', data });
+}
+
+async function auditTextJob(opts) {
+  const { content, key } = opts;
+  if (!content && !key) {
+    throw new Error('缺少 --content 或 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/text/auditing`;
+  const input = key ? { Object: key } : { Content: Buffer.from(content).toString('base64') };
+  const body = COS.util.json2xml({ Request: { Input: input, Conf: { BizType: '' } } });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'text/auditing', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'audit-text-job', data });
+}
+
+async function auditDocumentJob(opts) {
+  const { key, url: docUrl } = opts;
+  if (!key && !docUrl) {
+    throw new Error('缺少 --key 或 --url 参数');
+  }
+  const ciUrl = `https://${ciHost()}/document/auditing`;
+  const input = key ? { Object: key } : { Url: docUrl };
+  const body = COS.util.json2xml({ Request: { Input: input, Conf: { BizType: '' } } });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'document/auditing', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'audit-document-job', data });
+}
+
+async function describeAuditJob(opts) {
+  const jobId = opts['job-id'] || opts.jobId;
+  const type = opts.type || 'image';
+  if (!jobId) {
+    throw new Error('缺少 --job-id 参数');
+  }
+  const ciUrl = `https://${ciHost()}/${type}/auditing/${jobId}`;
+  const data = await cosRequestPromise({
+    Method: 'GET', Url: ciUrl, Key: `${type}/auditing/${jobId}`,
+  });
+  output({ success: true, action: 'describe-audit-job', type, jobId, data });
+}
+
+// ========== CI 智能语音 ==========
+
+async function speechRecognitionJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/asr_jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'SpeechRecognition',
+      Input: { Object: key },
+      Operation: {
+        SpeechRecognition: {
+          EngineModelType: opts.engine || '16k_zh_video',
+          ChannelNum: opts.channel || 1,
+          ResTextFormat: 0,
+          FilterDirty: 1,
+          FilterModal: 1,
+          ConvertNumMode: 0,
+        },
+        Output: { Bucket, Region, Object: `asr_result/${generateOutputFileId(key)}.txt` },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'asr_jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'speech-recognition-job', data });
+}
+
+async function ttsJob(opts) {
+  const { text } = opts;
+  if (!text) {
+    throw new Error('缺少 --text 参数');
+  }
+  const ciUrl = `https://${ciHost()}/jobs`;
+  const codec = opts.codec || 'mp3';
+  const voiceType = opts['voice-type'] || 'ruxue';
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'Tts',
+      Operation: {
+        TtsTpl: {
+          Mode: 'Sync',
+          Codec: codec,
+          VoiceType: voiceType,
+        },
+        TtsConfig: { InputType: 'Text', Input: text },
+        Output: { Bucket, Region, Object: `tts_result/${generateOutputFileId('')}.${codec}` },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'tts-job', data });
+}
+
+async function noiseReductionJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'NoiseReduction',
+      Input: { Object: key },
+      Operation: {
+        Output: { Bucket, Region, Object: `noise_result/${generateOutputFileId(key)}.mp3` },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'noise-reduction-job', data });
+}
+
+async function voiceSeparateJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/jobs`;
+  const outId = generateOutputFileId(key);
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'VoiceSeparate',
+      Input: { Object: key },
+      Operation: {
+        VoiceSeparate: { AudioMode: 'IsAudio' },
+        Output: { Bucket, Region, Object: `voice_sep/${outId}_bg.mp3`, AuObject: `voice_sep/${outId}_voice.mp3` },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'voice-separate-job', data });
+}
+
+// ========== CI 文件处理 ==========
+
+async function fileHashJob(opts) {
+  const { key, type: hashType } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  // 同步方式
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key,
+    Query: { 'ci-process': 'filehash', type: hashType || 'md5' },
+  });
+  output({ success: true, action: 'file-hash', key, data });
+}
+
+async function fileCompressJob(opts) {
+  const { prefix, format } = opts;
+  const key = opts.key || opts.output || `compressed_${generateOutputFileId('')}.zip`;
+  const ciUrl = `https://${ciHost()}/file_jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'FileCompress',
+      Operation: {
+        FileCompressConfig: { Flatten: '0', Format: format || 'zip', Prefix: prefix || '/' },
+        Output: { Bucket, Region, Object: key },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'file_jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'file-compress-job', data });
+}
+
+async function fileUncompressJob(opts) {
+  const { key, prefix } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const ciUrl = `https://${ciHost()}/file_jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'FileUncompress',
+      Input: { Object: key },
+      Operation: {
+        FileUncompressConfig: { Prefix: prefix || '', PrefixReplaced: '0' },
+        Output: { Bucket, Region },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'file_jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'file-uncompress-job', data });
+}
+
+async function describeFileJob(opts) {
+  const jobId = opts['job-id'] || opts.jobId;
+  if (!jobId) {
+    throw new Error('缺少 --job-id 参数');
+  }
+  const ciUrl = `https://${ciHost()}/file_jobs/${jobId}`;
+  const data = await cosRequestPromise({
+    Method: 'GET', Url: ciUrl, Key: `file_jobs/${jobId}`,
+  });
+  output({ success: true, action: 'describe-file-job', jobId, data });
+}
+
+// ========== CI 内容识别 ==========
+
+function outputAiProcessResult(action, result) {
+  if (!result.ok) {
+    const error = new Error(result.error?.message || 'AI 内容识别异步服务请求失败');
+    error.code = result.error?.code || 'RequestFailed';
+    error.request = result.request;
+    throw error;
+  }
+  const { ok, action: apiAction, ...data } = result;
+  output({ success: ok, action, apiAction, ...data });
+}
+
+async function describeAsyncContentRecognitionBucketsAction(opts) {
+  const result = await describeAsyncContentRecognitionBuckets({
+    region: Region,
+    bucketNames: opts['bucket-names'] || Bucket,
+    bucketName: opts['bucket-name'],
+    pageNumber: opts['page-number'] || 1,
+    pageSize: opts['page-size'] || 10,
+    creds: credentials,
+  });
+  outputAiProcessResult('describe-ai-process-buckets', result);
+}
+
+async function createAsyncContentRecognitionBucketAction() {
+  const result = await createAsyncContentRecognitionBucket({
+    bucket: Bucket,
+    region: Region,
+    creds: credentials,
+  });
+  outputAiProcessResult('create-ai-process-bucket', result);
+}
+
+async function deleteAsyncContentRecognitionBucketAction() {
+  const result = await deleteAsyncContentRecognitionBucket({
+    bucket: Bucket,
+    region: Region,
+    creds: credentials,
+  });
+  outputAiProcessResult('delete-ai-process-bucket', result);
+}
+
+async function recognizeImage(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  // 图片标签识别
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key,
+    Query: { 'ci-process': 'detect-label' },
+  });
+  output({ success: true, action: 'recognize-image', key, data });
+}
+
+async function ocrGeneral(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key,
+    Query: { 'ci-process': 'OCR', type: opts.type || 'general' },
+  });
+  output({ success: true, action: 'ocr-general', key, data });
+}
+
+// ========== CI 媒体处理（扩展） ==========
+
+async function mediaTranscodeJob(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const lastDot = key.lastIndexOf('.');
+  const base = lastDot === -1 ? key : key.substring(0, lastDot);
+  const format = opts.format || 'mp4';
+  const outObject = `${base}_transcode_${generateCode(6)}.${format}`;
+  const ciUrl = `https://${ciHost()}/jobs`;
+  const body = COS.util.json2xml({
+    Request: {
+      Tag: 'Transcode',
+      Input: { Object: key },
+      Operation: {
+        Transcode: { Container: { Format: format } },
+        Output: { Bucket, Region, Object: outObject },
+      },
+    },
+  });
+  const data = await cosRequestPromise({
+    Method: 'POST', Url: ciUrl, Key: 'jobs', Body: body, ContentType: 'application/xml',
+  });
+  output({ success: true, action: 'media-transcode-job', data });
+}
+
+async function mediaSnapshotJob(opts) {
+  const { key, time } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key, RawBody: true,
+    Query: { 'ci-process': 'snapshot', time: time || '1', format: opts.format || 'jpg' },
+  });
+  output({ success: true, action: 'media-snapshot', key, data: { statusCode: data.statusCode, headers: data.headers } });
+}
+
+async function mediaInfoGet(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key,
+    Query: { 'ci-process': 'videoinfo' },
+  });
+  output({ success: true, action: 'media-info', key, data });
+}
+
+// ========== CI 文档处理（扩展） ==========
+
+async function docPreview(opts) {
+  const { key, page } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const data = await cosRequestPromise({
+    Bucket, Region, Method: 'GET', Key: key,
+    Query: { 'ci-process': 'doc-preview', page: page || '1', dstType: opts.format || 'jpg' },
+  });
+  output({ success: true, action: 'doc-preview', key, data: { statusCode: data.statusCode, headers: data.headers } });
+}
+
+async function docPreviewHtmlUrl(opts) {
+  const { key } = opts;
+  if (!key) {
+    throw new Error('缺少 --key 参数');
+  }
+  const url = await new Promise((resolveP, rejectP) => {
+    cos.getObjectUrl({
+      Bucket, Region, Key: key,
+      Query: { 'ci-process': 'doc-preview', dstType: 'html' },
+      Expires: parseInt(opts.expires, 10) || 3600,
+      Sign: true,
+    }, (err, data) => {
+      if (err) {
+        rejectP(err);
+      } else {
+        resolveP(data.Url);
+      }
+    });
+  });
+  output({ success: true, action: 'doc-preview-html-url', key, url });
+}
+
+// ========== CI 通用 request（扩展入口） ==========
+
+async function ciRequest(opts) {
+  const method = (opts.method || 'GET').toUpperCase();
+  const path = opts.path;
+  if (!path) {
+    throw new Error('缺少 --path 参数（CI API 路径，如 doc_jobs、jobs、file_jobs）');
+  }
+  const url = `https://${ciHost()}/${path}`;
+  const reqParams = { Bucket, Region, Method: method, Key: path, Url: url };
+  if (opts.body) {
+    reqParams.Body = opts.body;
+    reqParams.ContentType = opts['content-type'] || 'application/xml';
+  }
+  if (opts.query) {
+    try {
+      reqParams.Query = JSON.parse(opts.query);
+    } catch {
+      throw new Error('--query 参数必须是有效的 JSON 字符串');
+    }
+  }
+  const data = await cosRequestPromise(reqParams);
+  output({ success: true, action: 'ci-request', path, method, data });
+}
+
+// ========== 主入口 ==========
+
+const action = requestedAction;
+
+const actions = {
+  // COS 存储操作
+  upload,
+  'put-string': putString,
+  download,
+  list,
+  'sign-url': signUrl,
+  delete: deleteObject,
+  head,
+  ...cosObjectReadActions,
+
+  // COS 存储桶管理
+  'list-buckets': listBuckets,
+  'create-bucket': createBucket,
+  'head-bucket': headBucket,
+  'get-bucket-acl': getBucketAcl,
+  'put-bucket-acl': putBucketAcl,
+  'get-bucket-cors': getBucketCors,
+  'put-bucket-cors': putBucketCors,
+  'get-bucket-tagging': getBucketTagging,
+  'put-bucket-tagging': putBucketTagging,
+  'get-bucket-versioning': getBucketVersioning,
+  'get-bucket-lifecycle': getBucketLifecycle,
+  'get-bucket-location': getBucketLocation,
+  'copy-object': copyObject,
+  'delete-multiple': deleteMultipleObjects,
+  ...cosBucketReadActions,
+
+  // CI 服务生命周期
+  'create-ci-bucket': createCiServiceLifecycleAction('create-ci-bucket', 'create', 'ci'),
+  'delete-ci-bucket': createCiServiceLifecycleAction('delete-ci-bucket', 'delete', 'ci'),
+  'create-doc-process-bucket': createCiServiceLifecycleAction('create-doc-process-bucket', 'create', 'document'),
+  'delete-doc-process-bucket': createCiServiceLifecycleAction('delete-doc-process-bucket', 'delete', 'document'),
+  'create-media-bucket': createCiServiceLifecycleAction('create-media-bucket', 'create', 'media'),
+  'delete-media-bucket': createCiServiceLifecycleAction('delete-media-bucket', 'delete', 'media'),
+  'create-asr-bucket': createCiServiceLifecycleAction('create-asr-bucket', 'create', 'voice'),
+  'delete-asr-bucket': createCiServiceLifecycleAction('delete-asr-bucket', 'delete', 'voice'),
+  'create-file-process-bucket': createCiServiceLifecycleAction('create-file-process-bucket', 'create', 'file'),
+  'delete-file-process-bucket': createCiServiceLifecycleAction('delete-file-process-bucket', 'delete', 'file'),
+
+  // CI 图片基础处理
+  'describe-async-image-process-buckets': describeAsyncImageProcessBucketsAction,
+  'create-async-image-process-bucket': createAsyncImageProcessBucketAction,
+  'delete-async-image-process-bucket': deleteAsyncImageProcessBucketAction,
+  'image-info': imageInfo,
+  'image-thumbnail': imageThumbnail,
+  'image-crop': imageCrop,
+  'image-rotate': imageRotate,
+  'image-format': imageFormat,
+  'watermark-font': watermarkFont,
+
+  // CI AI 图片处理
+  'assess-quality': assessQuality,
+  'ai-super-resolution': aiSuperResolution,
+  'ai-pic-matting': aiPicMatting,
+  'ai-qrcode': aiQrcode,
+
+  // CI 内容识别
+  'describe-ai-process-buckets': describeAsyncContentRecognitionBucketsAction,
+  'create-ai-process-bucket': createAsyncContentRecognitionBucketAction,
+  'delete-ai-process-bucket': deleteAsyncContentRecognitionBucketAction,
+  'recognize-image': recognizeImage,
+  'ocr-general': ocrGeneral,
+
+  // CI 文档处理
+  'create-doc-to-pdf-job': createDocToPdfJob,
+  'describe-doc-job': describeDocProcessJob,
+  'doc-preview': docPreview,
+  'doc-preview-html-url': docPreviewHtmlUrl,
+
+  // CI 媒体处理
+  'create-media-smart-cover-job': createMediaSmartCoverJob,
+  'describe-media-job': describeMediaJob,
+  'media-transcode-job': mediaTranscodeJob,
+  'media-snapshot': mediaSnapshotJob,
+  'media-info': mediaInfoGet,
+
+  // CI 内容审核
+  'audit-image': auditImage,
+  'audit-image-job': auditImageJob,
+  'audit-video-job': auditVideoJob,
+  'audit-audio-job': auditAudioJob,
+  'audit-text-job': auditTextJob,
+  'audit-document-job': auditDocumentJob,
+  'describe-audit-job': describeAuditJob,
+
+  // CI 智能语音
+  'speech-recognition-job': speechRecognitionJob,
+  'tts-job': ttsJob,
+  'noise-reduction-job': noiseReductionJob,
+  'voice-separate-job': voiceSeparateJob,
+
+  // CI 文件处理
+  'file-hash': fileHashJob,
+  'file-compress-job': fileCompressJob,
+  'file-uncompress-job': fileUncompressJob,
+  'describe-file-job': describeFileJob,
+
+  // CI MetaInsight
+  'list-datasets': listDatasets,
+  'create-dataset': createDataset,
+  'describe-dataset': describeDataset,
+  'create-dataset-binding': createDatasetBinding,
+  'describe-dataset-bindings': describeDatasetBindings,
+  'create-file-meta-index': createFileMetaIndex,
+  'describe-file-meta-index': describeFileMetaIndex,
+  'delete-file-meta-index': deleteFileMetaIndex,
+  'image-search-pic': imageSearchPic,
+  'image-search-text': imageSearchText,
+  'face-search': faceSearch,
+  'dataset-simple-query': datasetSimpleQuery,
+  'hybrid-search': hybridSearch,
+
+  // CI 通用 request（扩展入口）
+  'ci-request': ciRequest,
+
+  // 快捷功能
+  'create-knowledge-base': createKnowledgeBase,
+
+  // 凭证加密管理
+  'encrypt-env': encryptEnvAction,
+  'decrypt-env': decryptEnvAction,
+};
+
+const hiddenActions = getHiddenActions(process.env, Object.keys(actions));
+const availableActions = Object.keys(actions).filter(item => !hiddenActions.includes(item));
+
+if (!action || !actions[action]) {
+  output({
+    success: false,
+    error: `未知操作：${action || '(空)'}`,
+    mode: runtimeMode,
+    availableActions,
+    usage: 'node cos_node.mjs <action> [--option value ...]',
+    categories: {
+      '存储操作': [
+        'upload', 'put-string', 'download', 'list', 'sign-url', 'delete', 'delete-multiple', 'head', 'copy-object',
+        ...Object.keys(cosObjectReadActions),
+      ]
+        .filter(item => !hiddenActions.includes(item)),
+      '存储桶管理': [
+        'list-buckets', 'create-bucket', 'head-bucket', 'get-bucket-acl', 'put-bucket-acl', 'get-bucket-cors',
+        'put-bucket-cors', 'get-bucket-tagging', 'put-bucket-tagging', 'get-bucket-versioning',
+        'get-bucket-lifecycle', 'get-bucket-location', ...Object.keys(cosBucketReadActions),
+      ],
+      'CI服务绑定': [
+        'create-ci-bucket', 'delete-ci-bucket',
+      ].filter(item => !hiddenActions.includes(item)),
+      '图片基础处理': [
+        'describe-async-image-process-buckets',
+        'create-async-image-process-bucket',
+        'delete-async-image-process-bucket',
+        'image-info', 'image-thumbnail', 'image-crop', 'image-rotate', 'image-format', 'watermark-font',
+      ].filter(item => !hiddenActions.includes(item)),
+      'AI图片处理': ['assess-quality', 'ai-super-resolution', 'ai-pic-matting', 'ai-qrcode'],
+      '内容识别': [
+        'describe-ai-process-buckets', 'create-ai-process-bucket', 'delete-ai-process-bucket',
+        'recognize-image', 'ocr-general',
+      ].filter(item => !hiddenActions.includes(item)),
+      '文档处理': [
+        'create-doc-process-bucket', 'delete-doc-process-bucket',
+        'create-doc-to-pdf-job', 'describe-doc-job', 'doc-preview', 'doc-preview-html-url',
+      ].filter(item => !hiddenActions.includes(item)),
+      '媒体处理': [
+        'create-media-bucket', 'delete-media-bucket',
+        'create-media-smart-cover-job', 'describe-media-job', 'media-transcode-job', 'media-snapshot', 'media-info',
+      ].filter(item => !hiddenActions.includes(item)),
+      '内容审核': ['audit-image', 'audit-image-job', 'audit-video-job', 'audit-audio-job', 'audit-text-job', 'audit-document-job', 'describe-audit-job'],
+      '智能语音': [
+        'create-asr-bucket', 'delete-asr-bucket',
+        'speech-recognition-job', 'tts-job', 'noise-reduction-job', 'voice-separate-job',
+      ].filter(item => !hiddenActions.includes(item)),
+      '文件处理': [
+        'create-file-process-bucket', 'delete-file-process-bucket',
+        'file-hash', 'file-compress-job', 'file-uncompress-job', 'describe-file-job',
+      ].filter(item => !hiddenActions.includes(item)),
+      'MetaInsight数据集管理': ['list-datasets', 'create-dataset', 'describe-dataset', 'create-dataset-binding', 'describe-dataset-bindings'],
+      'MetaInsight索引管理': ['create-file-meta-index', 'describe-file-meta-index', 'delete-file-meta-index']
+        .filter(item => !hiddenActions.includes(item)),
+      'MetaInsight检索': ['image-search-pic', 'image-search-text', 'face-search', 'dataset-simple-query', 'hybrid-search'],
+      '通用CI请求': ['ci-request'],
+      '🚀快捷功能': ['create-knowledge-base'],
+      ...(runtimeMode === 'public' ? { '🔐凭证管理': ['encrypt-env', 'decrypt-env'] } : {}),
+      '⚠️禁止操作': [
+        '不允许删除存储桶(deleteBucket)',
+        '不允许清空存储桶',
+      ],
+    },
+  });
+  process.exit(1);
+}
+
+try {
+  assertActionAllowed(action, process.env, opts);
+  await actions[action](opts);
+} catch (err) {
+  output({
+    success: false,
+    action,
+    mode: runtimeMode,
+    error: err.message || String(err),
+    code: err.code,
+    ...(err.request ? { request: err.request } : {}),
+  });
+  process.exit(1);
+}

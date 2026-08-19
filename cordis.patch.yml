@@ -1,0 +1,4 @@
+# Insert the COS cloud storage plugin into the DSH web profile.
+- insert:
+    - id: ui-dsh-cos
+      name: dsh-cos
