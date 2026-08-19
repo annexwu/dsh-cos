@@ -70,14 +70,14 @@ describe('Tencent Cloud COS management catalog', () => {
       envFile: '/tmp/.env',
       encFile: '/tmp/.env.enc',
       SecretId: 'must-not-leak',
-      nested: { authorization: 'must-not-leak', key: 'reports/a.txt' },
+      nested: { authorization: 'must-not-leak', signature: 'must-not-leak', key: 'reports/a.txt' },
     })).toEqual({
       savedTo: '[redacted]',
       cwd: '[redacted]',
       envFile: '[redacted]',
       encFile: '[redacted]',
       SecretId: '[redacted]',
-      nested: { authorization: '[redacted]', key: 'reports/a.txt' },
+      nested: { authorization: '[redacted]', signature: '[redacted]', key: 'reports/a.txt' },
     })
   })
 

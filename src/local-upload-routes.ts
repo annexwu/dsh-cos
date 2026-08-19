@@ -291,7 +291,7 @@ export function registerLocalUploadRoutes(
 
   const schedule = () => {
     if (disposed) return
-    while (active < MAX_LOCAL_CONCURRENT_UPLOADS) {
+    while (active < MAX_LOCAL_CONCURRENT_UPLOADS && tasks.availableUploadSlots() > 0) {
       const task = tasks.list().find(item => item.source === 'local' && item.status === 'queued' && localSources.has(item.id) && !runningTaskIds.has(item.id))
       if (task === undefined) return
       active += 1
@@ -309,11 +309,6 @@ export function registerLocalUploadRoutes(
       const source = localSources.get(taskId)
       if (source === undefined) return
       const input = tasks.getUploadInput(taskId)
-      const sourcePath = await resolveExistingPath(source.sourcePath, [source.rootPath])
-      const info = await import('node:fs/promises').then(({ stat }) => stat(sourcePath))
-      if (!info.isFile() || info.size !== input.task.size) {
-        throw new HttpError(409, 'local-file-changed', '本机文件已变更，请重新选择后上传。')
-      }
       let control: UploadStreamControl | undefined
       let stream: ReturnType<typeof createReadStream> | undefined
       let cancelled = false
@@ -333,6 +328,11 @@ export function registerLocalUploadRoutes(
           control?.resume()
         },
       })
+      const sourcePath = await resolveExistingPath(source.sourcePath, [source.rootPath])
+      const info = await import('node:fs/promises').then(({ stat }) => stat(sourcePath))
+      if (!info.isFile() || info.size !== input.task.size) {
+        throw new HttpError(409, 'local-file-changed', '本机文件已变更，请重新选择后上传。')
+      }
       stream = createReadStream(sourcePath)
       const uploadStream = stream
       if (cancelled) uploadStream.destroy()

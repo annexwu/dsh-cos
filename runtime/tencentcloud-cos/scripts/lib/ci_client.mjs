@@ -303,10 +303,16 @@ export function parseCiRawError(raw) {
       code: raw.errorCode || 'Timeout',
       message: raw.errorMessage || 'request timed out',
       requestId: raw.requestId || null,
+      traceId: raw.traceId || null,
     };
   }
   if (raw?.body?.trim().startsWith('<')) {
-    return parseCosErrorXml(raw.body);
+    const parsed = parseCosErrorXml(raw.body);
+    return {
+      ...parsed,
+      requestId: parsed.requestId || raw?.requestId || null,
+      traceId: parsed.traceId || raw?.traceId || null,
+    };
   }
   let json = null;
   try {
@@ -314,10 +320,15 @@ export function parseCiRawError(raw) {
   } catch {
     json = null;
   }
+  const nested = json?.Error || json?.error || json?.Response?.Error;
+  const detail = nested && typeof nested === 'object' ? nested : json;
   return {
-    code: json?.Code || json?.code || `HTTP_${raw?.status || 0}`,
-    message: json?.Message || json?.message || raw?.bodySnippet || raw?.body || 'request failed',
-    requestId: json?.RequestId || json?.requestId || raw?.requestId || null,
+    code: detail?.Code || detail?.code || json?.Code || json?.code || `HTTP_${raw?.status || 0}`,
+    message: detail?.Message || detail?.message || (typeof nested === 'string' ? nested : null) || json?.Message || json?.message || raw?.bodySnippet || raw?.body || 'request failed',
+    requestId: detail?.RequestId || detail?.requestId || raw?.requestId || null,
+    traceId: detail?.TraceId || detail?.traceId || raw?.traceId || null,
+    resource: detail?.Resource || detail?.resource || null,
+    details: detail?.Details || detail?.details || detail?.Reason || detail?.reason || null,
   };
 }
 

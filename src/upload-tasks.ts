@@ -120,12 +120,15 @@ export class UploadTaskManager {
   resume(taskId: string): CosUploadTask {
     const record = this.require(taskId)
     if (record.task.status !== 'paused') throw new HttpError(409, 'task-not-resumable', '该任务当前不能继续。')
-    this.assertConcurrency()
     record.lastProgressBytes = record.task.uploadedBytes
     record.lastProgressAt = this.now().getTime()
     record.controls?.resume()
     this.patch(record, { status: 'uploading', speedBytesPerSecond: 0 })
     return this.copy(record.task)
+  }
+
+  availableUploadSlots(): number {
+    return Math.max(0, MAX_CONCURRENT_UPLOADS - this.activeUploadCount())
   }
 
   progress(taskId: string, uploadedBytes: number): void {
@@ -157,6 +160,7 @@ export class UploadTaskManager {
       finishedAt: this.now().toISOString(),
       error: undefined,
     })
+    this.scheduleLocalTasks()
     return this.copy(record.task)
   }
 
@@ -170,6 +174,7 @@ export class UploadTaskManager {
       finishedAt: this.now().toISOString(),
       error: message,
     })
+    this.scheduleLocalTasks()
     return this.copy(record.task)
   }
 
@@ -189,6 +194,7 @@ export class UploadTaskManager {
     try {
       controls?.cancel()
     } catch {}
+    this.scheduleLocalTasks()
     return this.copy(record.task)
   }
 
@@ -208,7 +214,7 @@ export class UploadTaskManager {
       finishedAt: undefined,
       error: undefined,
     })
-    if (record.task.source === 'local') queueMicrotask(() => this.localTaskScheduler?.())
+    if (record.task.source === 'local') this.scheduleLocalTasks()
     return this.copy(record.task)
   }
 
@@ -263,10 +269,17 @@ export class UploadTaskManager {
     if (patch.error === undefined && 'error' in patch) delete record.task.error
   }
 
+  private activeUploadCount(): number {
+    return Array.from(this.tasks.values()).filter(item => item.task.status === 'uploading' || item.task.status === 'paused').length
+  }
+
+  private scheduleLocalTasks(): void {
+    queueMicrotask(() => this.localTaskScheduler?.())
+  }
+
   private assertConcurrency(): void {
-    const activeCount = Array.from(this.tasks.values()).filter(item => item.task.status === 'uploading').length
-    if (activeCount >= MAX_CONCURRENT_UPLOADS) {
-      throw new HttpError(429, 'upload-concurrency-limit', '当前已有 3 个文件正在上传，请稍后重试。')
+    if (this.availableUploadSlots() === 0) {
+      throw new HttpError(429, 'upload-concurrency-limit', '当前上传并发已满，请稍后重试。')
     }
   }
 

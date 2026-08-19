@@ -71,13 +71,29 @@ describe('UploadTaskManager', () => {
     expect(manager.getUploadInput(task.id).config).toEqual(config)
   })
 
-  it('enforces three concurrent uploads', () => {
+  it('enforces three concurrent uploads while paused requests keep their slots', () => {
     const manager = createManager()
     const ids = Array.from({ length: 4 }, (_, index) => manager.create({
       name: `${index}.txt`, path: '', key: `root/${index}.txt`, size: 1, contentType: 'text/plain', config,
     }).id)
     for (const id of ids.slice(0, 3)) manager.begin(id, controls())
-    expect(() => manager.begin(ids[3], controls())).toThrow('当前已有 3 个文件正在上传')
+    expect(manager.availableUploadSlots()).toBe(0)
+    expect(() => manager.begin(ids[3], controls())).toThrow('当前上传并发已满')
+    manager.pause(ids[0])
+    expect(manager.availableUploadSlots()).toBe(0)
+    expect(() => manager.begin(ids[3], controls())).toThrow('当前上传并发已满')
+    expect(manager.resume(ids[0]).status).toBe('uploading')
+  })
+
+  it('wakes the local queue whenever an upload slot is released', async () => {
+    const manager = createManager()
+    const schedule = vi.fn()
+    manager.setLocalTaskScheduler(schedule)
+    const task = manager.create({ name: 'a.txt', path: '', key: 'root/a.txt', size: 1, contentType: 'text/plain', config })
+    manager.begin(task.id, controls())
+    manager.complete(task.id)
+    await Promise.resolve()
+    expect(schedule).toHaveBeenCalledOnce()
   })
 
   it('only removes terminal tasks and clears completed records', () => {

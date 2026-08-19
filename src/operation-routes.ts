@@ -438,7 +438,8 @@ export function registerOperationRoutes(
         if (taskId !== undefined) {
           try {
             const current = tasks.get(taskId)
-            if (current.status !== 'cancelled') tasks.fail(taskId, describeUploadError(error))
+            const concurrencyLimited = error instanceof HttpError && error.code === 'upload-concurrency-limit'
+            if (current.status !== 'cancelled' && !concurrencyLimited) tasks.fail(taskId, describeUploadError(error))
           } catch {}
         }
         safeSendError(response, error instanceof HttpError ? error : new HttpError(502, 'upload-failed', describeCosError(error)))

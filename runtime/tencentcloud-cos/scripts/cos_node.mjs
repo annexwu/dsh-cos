@@ -22,11 +22,13 @@ import { pipeline } from 'stream/promises';
 import {
   assertActionAllowed,
   assertCredentials,
+  cosRequest,
   decryptEnvBuffer,
   encryptEnvBuffer,
   getHiddenActions,
   getRuntimeCredentials,
   getRuntimeMode,
+  parseCiRawError,
 } from './lib/ci_client.mjs';
 import {
   createAsyncContentRecognitionBucket,
@@ -45,6 +47,7 @@ import {
   resolveMetaInsightHost,
   resolveRuntimeScope,
 } from './lib/runtime_scope.mjs';
+import { runtimeFailurePayload } from './lib/runtime_error.mjs';
 
 const requestedAction = process.argv[2];
 const requestedArgs = process.argv.slice(3);
@@ -58,11 +61,8 @@ try {
   assertActionAllowed(requestedAction, process.env, { method: requestedMethod });
 } catch (err) {
   console.error(JSON.stringify({
-    success: false,
-    action: requestedAction,
+    ...runtimeFailurePayload(requestedAction, err),
     mode: getRuntimeMode(),
-    error: err.message || String(err),
-    code: err.code,
   }));
   process.exit(1);
 }
@@ -85,10 +85,10 @@ const credentials = getRuntimeCredentials();
 try {
   assertCredentials(credentials);
 } catch (err) {
+  const credentialError = new Error(`缺少凭证：${err.message}。Region/Bucket 可通过环境变量或 --region/--bucket 参数指定。`);
+  credentialError.code = err.code;
   console.error(JSON.stringify({
-    success: false,
-    error: `缺少凭证：${err.message}。Region/Bucket 可通过环境变量或 --region/--bucket 参数指定。`,
-    code: err.code,
+    ...runtimeFailurePayload(requestedAction, credentialError),
     mode: runtimeMode,
   }));
   process.exit(1);
@@ -159,7 +159,62 @@ function cosPromise(method, params) {
   });
 }
 
+function parseDirectResponseBody(raw) {
+  const body = String(raw.body || '').trim();
+  if (!body) return {};
+  if (body.startsWith('{') || body.startsWith('[')) {
+    try {
+      return JSON.parse(body);
+    } catch (cause) {
+      const error = new Error(`无法解析腾讯云 JSON 响应：${cause.message}`);
+      error.code = 'ResponseParseError';
+      error.statusCode = raw.status;
+      error.requestId = raw.requestId;
+      error.traceId = raw.traceId;
+      throw error;
+    }
+  }
+  if (body.startsWith('<')) return COS.util.xml2json(body) || {};
+  return body;
+}
+
+async function directJsonRequest(params) {
+  const target = new URL(params.Url);
+  const query = Object.fromEntries(target.searchParams.entries());
+  if (params.Query && typeof params.Query === 'object') Object.assign(query, params.Query);
+  const method = String(params.Method || 'GET').toUpperCase();
+  const pathname = target.pathname || '/';
+  const extraHeaders = {
+    ...(params.Headers || {}),
+    ...(params.ContentType ? { 'Content-Type': params.ContentType } : {}),
+  };
+  const raw = await cosRequest({
+    method,
+    host: target.host,
+    pathname,
+    query,
+    creds: credentials,
+    body: params.Body ?? null,
+    extraHeaders,
+  });
+  if (!raw.ok) {
+    const detail = parseCiRawError(raw);
+    const error = new Error(detail.message || `HTTP ${raw.status}`);
+    Object.assign(error, detail, {
+      statusCode: raw.status,
+      requestId: detail.requestId || raw.requestId,
+      traceId: detail.traceId || raw.traceId,
+      request: { method, host: target.host, pathname },
+    });
+    throw error;
+  }
+  return parseDirectResponseBody(raw);
+}
+
 function cosRequestPromise(params) {
+  const accept = String(params.Headers?.Accept || params.Headers?.accept || '');
+  const contentType = String(params.ContentType || params.Headers?.['Content-Type'] || params.Headers?.['content-type'] || '');
+  if (params.Url && (/json/i.test(accept) || /json/i.test(contentType))) return directJsonRequest(params);
   return new Promise((resolveP, rejectP) => {
     cos.request(params, (err, data) => {
       if (err) {
@@ -2124,12 +2179,8 @@ try {
   await actions[action](opts);
 } catch (err) {
   output({
-    success: false,
-    action,
+    ...runtimeFailurePayload(action, err),
     mode: runtimeMode,
-    error: err.message || String(err),
-    code: err.code,
-    ...(err.request ? { request: err.request } : {}),
   });
   process.exit(1);
 }

@@ -15,7 +15,7 @@ const MAX_CHILD_OUTPUT_BYTES = 2 * 1024 * 1024
 const ACTION_PATTERN = /^[a-z][a-z0-9-]{0,80}$/
 const PARAMETER_PATTERN = /^[a-z][a-z0-9-]{0,80}$/
 const SENSITIVE_PARAMETER_PATTERN = /(?:^|[-_])(secret|authorization|password|cookie|skey|access[-_]?key|security[-_]?token|session[-_]?token)(?:$|[-_])/i
-const SENSITIVE_OUTPUT_PATTERN = /(?:secret|authorization|password|cookie|skey|access[-_]?key|security[-_]?token|session[-_]?token)/i
+const SENSITIVE_OUTPUT_PATTERN = /(?:secret|authorization|password|cookie|skey|signature|private[-_]?key|access[-_]?key|security[-_]?token|session[-_]?token)/i
 const LOCAL_PATH_OUTPUT_KEYS = new Set(['cwd', 'savedTo', 'envFile', 'encFile'])
 const RESTRICTED_LOCAL_KEYS = new Set(['file', 'output'])
 
@@ -422,12 +422,8 @@ async function runCli(script: RuntimeScript, action: string, parameters: Record<
         return
       }
       if (code !== 0) {
-        const message = isRecord(parsed) && typeof parsed.error === 'string'
-          ? parsed.error
-          : isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === 'string'
-            ? parsed.error.message
-            : `Tencent Cloud ${action} failed.`
-        rejectResult(new Error(message))
+        const sanitized = sanitizeTencentCloudManagementOutput(parsed)
+        rejectResult(new Error(formatTencentCloudManagementFailure(action, sanitized)))
         return
       }
       resolveResult(parsed)
@@ -444,6 +440,51 @@ export function sanitizeTencentCloudManagementOutput(value: unknown, key?: strin
   if (Array.isArray(value)) return value.map(item => sanitizeTencentCloudManagementOutput(item))
   if (!isRecord(value)) return String(value)
   return Object.fromEntries(Object.entries(value).map(([name, child]) => [name, sanitizeTencentCloudManagementOutput(child, name)])) as JsonValue
+}
+
+function errorField(record: Record<string, unknown>, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = record[name]
+    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return undefined
+}
+
+function clippedJson(value: unknown, max = 600): string | undefined {
+  if (value === undefined || value === null) return undefined
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value)
+  if (!serialized || serialized === '{}') return undefined
+  return serialized.length > max ? `${serialized.slice(0, max)}…` : serialized
+}
+
+export function formatTencentCloudManagementFailure(action: string, value: unknown): string {
+  const root = isRecord(value) ? value : {}
+  const error = isRecord(root.error) ? root.error : root
+  const message = typeof root.error === 'string'
+    ? root.error
+    : errorField(error, 'message', 'Message') || `Tencent Cloud ${action} failed.`
+  const code = errorField(error, 'code', 'Code') || errorField(root, 'code', 'Code')
+  const request = isRecord(error.request) ? error.request : isRecord(root.request) ? root.request : undefined
+  const statusCode = errorField(error, 'statusCode', 'status') || errorField(root, 'statusCode', 'status') || (request ? errorField(request, 'statusCode', 'status') : undefined)
+  const requestId = errorField(error, 'requestId', 'RequestId') || errorField(root, 'requestId', 'RequestId') || (request ? errorField(request, 'requestId', 'RequestId') : undefined)
+  const traceId = errorField(error, 'traceId', 'TraceId') || errorField(root, 'traceId', 'TraceId') || (request ? errorField(request, 'traceId', 'TraceId') : undefined)
+  const resource = errorField(error, 'resource', 'Resource') || errorField(root, 'resource', 'Resource')
+  const details = clippedJson(error.details)
+  const method = request ? errorField(request, 'method') : undefined
+  const host = request ? errorField(request, 'host') : undefined
+  const pathname = request ? errorField(request, 'pathname') : undefined
+  const requestSummary = [method, host ? `${host}${pathname || ''}` : pathname].filter(Boolean).join(' ')
+  const headline = `${action} failed${code ? ` [${code}]` : ''}: ${message}`
+  const context = [
+    statusCode ? `HTTP status: ${statusCode}` : undefined,
+    requestId ? `RequestId: ${requestId}` : undefined,
+    traceId ? `TraceId: ${traceId}` : undefined,
+    resource ? `Resource: ${resource}` : undefined,
+    details ? `Details: ${details}` : undefined,
+    requestSummary ? `Request: ${requestSummary}` : undefined,
+  ].filter((item): item is string => item !== undefined)
+  return [headline, ...context].join('\n')
 }
 
 export function getTencentCloudManagementActionCatalog(tool: 'storage' | 'ci'): ReadonlyArray<Readonly<{
