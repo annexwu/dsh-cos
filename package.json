@@ -45,7 +45,8 @@
     "build": "pnpm run clean && tsc -p tsconfig.build.json && tsdown",
     "prepare": "pnpm run build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "files": [
     "lib/index.js",

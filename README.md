@@ -90,9 +90,7 @@ npm 安装是正常使用方式；只有开发或调试插件时才需要链接�
 git clone https://github.com/annexwu/dsh-cos.git
 cd dsh-cos
 pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm verify
 
 # 使用 DSH 源码仓库时，在 DSH 根目录执行：
 pnpm dsh plugin --profile web add 'link:<dsh-cos 绝对路径>'

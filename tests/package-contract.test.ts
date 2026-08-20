@@ -48,6 +48,7 @@ describe('public npm package contract', () => {
 
   it('builds package artifacts before GitHub or npm installation', () => {
     expect(manifest.scripts.prepare).toBe('pnpm run build')
+    expect(manifest.scripts.verify).toBe('pnpm run typecheck && pnpm run test && pnpm run build')
     expect(manifest.scripts.build).toContain('tsc -p tsconfig.build.json')
     expect(manifest.scripts.build).toContain('tsdown')
   })
