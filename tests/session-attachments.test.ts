@@ -11,6 +11,7 @@ import {
   sessionAttachmentDirectory,
   writeAttachmentFileInFolder,
   writeSessionAttachment,
+  withCosAttachmentOrigin,
 } from '../src/session-attachments.ts'
 
 const roots: string[] = []
@@ -55,5 +56,23 @@ describe('session attachment storage', () => {
     await expect(readFile(join(root, 'reports', 'a.txt'), 'utf8')).resolves.toBe('A')
     await removeSessionAttachment(cwd, 'session-2', attachment.path)
     await expect(readFile(join(root, 'reports', 'b.txt'), 'utf8')).rejects.toThrow()
+  })
+
+  it('keeps each COS file or directory attached to its original object identity', () => {
+    const file = withCosAttachmentOrigin(
+      { path: 'D:/workspace/report.pdf', name: 'report.pdf', size: 1, source: 'cos', isDirectory: false },
+      'reports-1250000000',
+      'ap-shanghai',
+      'daily/report.pdf',
+    )
+    const directory = withCosAttachmentOrigin(
+      { path: 'D:/workspace/archive', name: 'archive', size: 2, source: 'cos', isDirectory: true },
+      'archive-1250000000',
+      'ap-beijing',
+      'exports/',
+    )
+
+    expect(file.cos).toEqual({ bucket: 'reports-1250000000', region: 'ap-shanghai', key: 'daily/report.pdf' })
+    expect(directory.cos).toEqual({ bucket: 'archive-1250000000', region: 'ap-beijing', key: 'exports/' })
   })
 })

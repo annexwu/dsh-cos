@@ -9,6 +9,15 @@ import type { SessionAttachment } from './protocol.ts'
 const ATTACHMENT_DIRECTORY = '.dsh-cos'
 const MAX_NAME_BYTES = 240
 
+export function withCosAttachmentOrigin(
+  attachment: SessionAttachment,
+  bucket: string,
+  region: string,
+  key: string,
+): SessionAttachment {
+  return { ...attachment, cos: { bucket, region, key } }
+}
+
 export function sanitizeSessionId(value: string): string {
   const sessionId = value.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 120)
   if (sessionId === '') throw new ConfigValidationError('会话标识无效。')

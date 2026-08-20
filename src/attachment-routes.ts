@@ -26,6 +26,7 @@ import {
   setAttachmentDirectorySize,
   writeAttachmentFileInFolder,
   writeSessionAttachment,
+  withCosAttachmentOrigin,
 } from './session-attachments.ts'
 
 const API_LOCAL_ATTACHMENT = '/api/dsh-cos/attachments/local'
@@ -188,7 +189,7 @@ export function registerAttachmentRoutes(ctx: AttachmentDependencies, services: 
           const attachment = await writeSessionAttachment(session.cwd, session.sessionId, baseName(key), download.stream, download.contentLength, 'cos')
           const body: ImportCosAttachmentResponse = {
             ok: true,
-            attachment: { ...attachment, cos: { bucket: config.bucket, region: config.region, key } },
+            attachment: withCosAttachmentOrigin(attachment, config.bucket, config.region, key),
           }
           sendJson(response, 200, body)
           return
@@ -205,7 +206,7 @@ export function registerAttachmentRoutes(ctx: AttachmentDependencies, services: 
           const attachment = await setAttachmentDirectorySize(directoryAttachment)
           const body: ImportCosAttachmentResponse = {
             ok: true,
-            attachment: { ...attachment, cos: { bucket: config.bucket, region: config.region, key } },
+            attachment: withCosAttachmentOrigin(attachment, config.bucket, config.region, key),
           }
           sendJson(response, 200, body)
         } catch (error) {
