@@ -2,6 +2,10 @@
 
 腾讯云 COS 云存储的 DeepSeek Harness Web 插件。
 
+## 界面预览
+
+![COS 云存储面板](https://raw.githubusercontent.com/annexwu/dsh-cos/main/assets/screenshots/cos-storage-panel.png)
+
 ## 当前能力
 
 - 作为 bundle 安装到 DSH `web` profile。
@@ -56,6 +60,10 @@ pnpm dsh web
 3. 点击“测试连接”，通过后保存配置。
 4. 从侧边栏进入“COS 云存储”，即可浏览、上传、下载、预览和生成临时链接。
 5. 在 AI 会话中可以直接说“把这些产物同步到 COS 云存储”或“给刚上传的文件生成临时分享链接”；内置 Skill 会先确认目标和影响，再调用 Agent Tool。
+
+#### 插件配置
+
+![COS 云存储配置](https://raw.githubusercontent.com/annexwu/dsh-cos/main/assets/screenshots/cos-settings.png)
 
 ### 在会话中添加 COS 附件
 
