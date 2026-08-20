@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useSyncExternalStore } from 'react'
+import React, { useState, useSyncExternalStore } from 'react'
 import type { CosStorageItem, SessionAttachment } from '../protocol.ts'
 import { importCosAttachment, removeSessionAttachment } from './api.ts'
 import { getAttachmentCopy } from './attachment-copy.ts'
+import { decodeSessionAttachmentReference, encodeSessionAttachmentReference, sessionAttachmentPath } from './attachment-reference.ts'
 import { AttachmentPicker } from './AttachmentPicker.tsx'
 import { StorageIcon } from './StorageIcon.tsx'
 import { formatBytes } from './storage-format.ts'
@@ -46,25 +47,8 @@ type AttachmentButtonProps = {
   attach: (attachment: SessionAttachment) => Promise<void>
 }
 
-type AttachmentMeta = SessionAttachment & { label: string }
-
-const metadata = new Map<string, AttachmentMeta>()
 let lastError: string | undefined
 
-export function getAttachmentMetadata(path: string): SessionAttachment | undefined {
-  return metadata.get(path)
-}
-
-export function serializeSessionAttachment(attachment: SessionAttachment): string {
-  if (attachment.cos === undefined) return attachment.path
-  return [
-    '[COS 云存储附件]',
-    `本地路径：${attachment.path}`,
-    `COS URI：cos://${attachment.cos.bucket}/${attachment.cos.key}`,
-    `地域：${attachment.cos.region}`,
-    '[/COS 云存储附件]',
-  ].join('\n')
-}
 const listeners = new Set<() => void>()
 
 function notify(): void {
@@ -91,10 +75,11 @@ async function insertReference(actx: ActionContext, attachment: SessionAttachmen
   if (input === undefined) throw new Error('conversation input service unavailable')
   const state = input.state.getSnapshot()
   const referenceIndex = state.occurrences.filter(item => item.source === SOURCE_NAME).length + 1
+  const ref = encodeSessionAttachmentReference(attachment)
   actx.emit('slash/input-insert-reference', {
     reference: {
       source: SOURCE_NAME,
-      ref: attachment.path,
+      ref,
       label: getAttachmentCopy().inputReference(referenceIndex),
       clipboardText: attachment.path,
     },
@@ -104,9 +89,7 @@ async function insertReference(actx: ActionContext, attachment: SessionAttachmen
       draftRev: state.draftRev,
     },
   })
-  const inserted = input.state.getSnapshot().occurrences.some(item => item.source === SOURCE_NAME && item.ref === attachment.path)
-  if (inserted) metadata.set(attachment.path, { ...attachment, label: attachment.name })
-  return inserted
+  return input.state.getSnapshot().occurrences.some(item => item.source === SOURCE_NAME && item.ref === ref)
 }
 
 function AttachmentMenu({ sessionId, attach }: AttachmentButtonProps): React.JSX.Element {
@@ -152,41 +135,34 @@ export function ConversationAttachmentDock({ sessionId, useInput, inputActions }
   const error = useSyncExternalStore(subscribe, attachmentErrorSnapshot)
   const occurrences = state.occurrences.filter(item => item.source === SOURCE_NAME)
 
-  useEffect(() => {
-    const live = new Set(occurrences.map(item => item.ref))
-    for (const key of metadata.keys()) {
-      if (!live.has(key)) metadata.delete(key)
-    }
-  }, [occurrences])
-
   if (occurrences.length === 0 && error === undefined) return null
 
   const remove = (occurrence: Occurrence) => {
     let end = occurrence.offset
     while (end < state.draft.length && !/\s/.test(state.draft[end])) end += 1
     inputActions.setDraft(`${state.draft.slice(0, occurrence.offset)}${state.draft.slice(end)}`)
-    metadata.delete(occurrence.ref)
-    void removeSessionAttachment({ sessionId, path: occurrence.ref }).catch(() => {})
+    void removeSessionAttachment({ sessionId, path: sessionAttachmentPath(occurrence.ref) }).catch(() => {})
   }
 
   return (
     <div className="dsh-cos-conversation-dock">
       {error && <div className="dsh-cos-conversation-dock__error" role="alert">{error}<button type="button" onClick={() => setError(undefined)}>×</button></div>}
       {occurrences.map(occurrence => {
-        const meta = metadata.get(occurrence.ref)
-        const name = meta?.name ?? occurrence.ref.split(/[\\/]/).filter(Boolean).pop() ?? occurrence.ref
+        const attachment = decodeSessionAttachmentReference(occurrence.ref)
+        const path = attachment?.path ?? occurrence.ref
+        const name = attachment?.name ?? path.split(/[\\/]/).filter(Boolean).pop() ?? path
         const item: CosStorageItem = {
-          kind: meta?.isDirectory ? 'folder' : 'file',
+          kind: attachment?.isDirectory ? 'folder' : 'file',
           name,
-          key: occurrence.ref,
-          path: occurrence.ref,
-          size: meta?.size ?? 0,
+          key: path,
+          path,
+          size: attachment?.size ?? 0,
         }
         return (
           <div className="dsh-cos-conversation-card" key={occurrence.occurrenceId}>
             <span className="dsh-cos-conversation-card__icon"><StorageIcon item={item} /></span>
-            <span className="dsh-cos-conversation-card__name" title={occurrence.ref}>{name}</span>
-            <span className="dsh-cos-conversation-card__meta">{meta?.source === 'cos' ? copy.cosSource : copy.localSource}{meta && meta.size > 0 ? ` · ${formatBytes(meta.size)}` : ''}</span>
+            <span className="dsh-cos-conversation-card__name" title={path}>{name}</span>
+            <span className="dsh-cos-conversation-card__meta">{attachment?.source === 'cos' ? copy.cosSource : copy.localSource}{attachment && attachment.size > 0 ? ` · ${formatBytes(attachment.size)}` : ''}</span>
             <button type="button" aria-label={copy.remove} onClick={() => remove(occurrence)}>×</button>
           </div>
         )

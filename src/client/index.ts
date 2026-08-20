@@ -6,10 +6,9 @@ import {
   ConversationAttachmentButton,
   ConversationAttachmentDock,
   createAttachmentAction,
-  getAttachmentMetadata,
-  serializeSessionAttachment,
   type InputServiceContext,
 } from './ConversationAttachments.tsx'
+import { serializeSessionAttachmentReference, sessionAttachmentPath } from './attachment-reference.ts'
 import { SettingsCard } from './SettingsCard.tsx'
 import { CosStorageController } from './controller.ts'
 import { mountPanel } from './panel.tsx'
@@ -38,11 +37,8 @@ export function apply(ctx: AttachmentClientContext): void {
       candidates: async () => [],
       onPick: () => undefined,
       codec: {
-        clipboardText: (ref: string) => ref,
-        serialize: async (ref: string) => {
-          const attachment = getAttachmentMetadata(ref)
-          return attachment === undefined ? ref : serializeSessionAttachment(attachment)
-        },
+        clipboardText: (ref: string) => sessionAttachmentPath(ref),
+        serialize: async (ref: string) => serializeSessionAttachmentReference(ref),
       },
     })
     return () => undefined
