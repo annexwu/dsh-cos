@@ -50,6 +50,21 @@ type AttachmentMeta = SessionAttachment & { label: string }
 
 const metadata = new Map<string, AttachmentMeta>()
 let lastError: string | undefined
+
+export function getAttachmentMetadata(path: string): SessionAttachment | undefined {
+  return metadata.get(path)
+}
+
+export function serializeSessionAttachment(attachment: SessionAttachment): string {
+  if (attachment.cos === undefined) return attachment.path
+  return [
+    '[COS 云存储附件]',
+    `本地路径：${attachment.path}`,
+    `COS URI：cos://${attachment.cos.bucket}/${attachment.cos.key}`,
+    `地域：${attachment.cos.region}`,
+    '[/COS 云存储附件]',
+  ].join('\n')
+}
 const listeners = new Set<() => void>()
 
 function notify(): void {

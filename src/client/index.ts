@@ -6,6 +6,8 @@ import {
   ConversationAttachmentButton,
   ConversationAttachmentDock,
   createAttachmentAction,
+  getAttachmentMetadata,
+  serializeSessionAttachment,
   type InputServiceContext,
 } from './ConversationAttachments.tsx'
 import { SettingsCard } from './SettingsCard.tsx'
@@ -37,7 +39,10 @@ export function apply(ctx: AttachmentClientContext): void {
       onPick: () => undefined,
       codec: {
         clipboardText: (ref: string) => ref,
-        serialize: async (ref: string) => ref,
+        serialize: async (ref: string) => {
+          const attachment = getAttachmentMetadata(ref)
+          return attachment === undefined ? ref : serializeSessionAttachment(attachment)
+        },
       },
     })
     return () => undefined

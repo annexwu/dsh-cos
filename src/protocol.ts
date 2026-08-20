@@ -167,12 +167,19 @@ export interface DeleteCosObjectResponse {
   deleted: number
 }
 
+export interface CosAttachmentOrigin {
+  bucket: string
+  region: string
+  key: string
+}
+
 export interface SessionAttachment {
   path: string
   name: string
   size: number
   source: 'local' | 'cos'
   isDirectory: boolean
+  cos?: CosAttachmentOrigin
 }
 
 export interface CreateLocalAttachmentResponse {

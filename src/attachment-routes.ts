@@ -186,7 +186,10 @@ export function registerAttachmentRoutes(ctx: AttachmentDependencies, services: 
         if (input.kind === 'file') {
           const download = await getCosDownloadStream(config, credentials, key)
           const attachment = await writeSessionAttachment(session.cwd, session.sessionId, baseName(key), download.stream, download.contentLength, 'cos')
-          const body: ImportCosAttachmentResponse = { ok: true, attachment }
+          const body: ImportCosAttachmentResponse = {
+            ok: true,
+            attachment: { ...attachment, cos: { bucket: config.bucket, region: config.region, key } },
+          }
           sendJson(response, 200, body)
           return
         }
@@ -200,7 +203,10 @@ export function registerAttachmentRoutes(ctx: AttachmentDependencies, services: 
             await writeAttachmentFileInFolder(root, relativePath, download.stream, download.contentLength ?? object.size)
           }
           const attachment = await setAttachmentDirectorySize(directoryAttachment)
-          const body: ImportCosAttachmentResponse = { ok: true, attachment }
+          const body: ImportCosAttachmentResponse = {
+            ok: true,
+            attachment: { ...attachment, cos: { bucket: config.bucket, region: config.region, key } },
+          }
           sendJson(response, 200, body)
         } catch (error) {
           await import('node:fs/promises').then(({ rm }) => rm(root, { recursive: true, force: true }))
