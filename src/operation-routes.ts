@@ -41,6 +41,7 @@ import type {
   DeleteCosObjectResponse,
 } from './protocol.ts'
 import { UploadTaskManager } from './upload-tasks.ts'
+import { isCiDocumentPreviewExtension } from './preview-policy.ts'
 
 const API_CREATE_FOLDER = '/api/dsh-cos/objects/folder'
 const API_DOWNLOAD_OBJECT = '/api/dsh-cos/objects/download'
@@ -55,11 +56,6 @@ const TEXT_EXTENSIONS = new Set([
   'bat', 'c', 'cc', 'cfg', 'conf', 'cpp', 'cs', 'css', 'env', 'go', 'h', 'hpp', 'html', 'ini', 'java', 'js', 'json',
   'jsx', 'log', 'md', 'mjs', 'properties', 'py', 'rb', 'rs', 'sh', 'sql', 'text', 'toml', 'ts', 'tsx', 'txt', 'vue',
   'xml', 'yaml', 'yml',
-])
-const CI_DOCUMENT_EXTENSIONS = new Set([
-  'csv', 'doc', 'docm', 'docx', 'dot', 'dotm', 'dotx', 'dps', 'dpt', 'et', 'ett', 'pdf', 'pot', 'potm', 'potx',
-  'pps', 'ppsm', 'ppsx', 'ppt', 'pptm', 'pptx', 'rtf', 'txt', 'wps', 'wpt', 'xls', 'xlsb', 'xlsm', 'xlsx', 'xlt',
-  'xltm', 'xltx',
 ])
 const API_DELETE_OBJECT = '/api/dsh-cos/objects/delete'
 const API_CREATE_UPLOAD = '/api/dsh-cos/uploads/create'
@@ -270,14 +266,14 @@ export function registerOperationRoutes(
           sendJson(response, 200, body)
           return
         }
-        if (IMAGE_EXTENSIONS.has(extension) || VIDEO_EXTENSIONS.has(extension) || AUDIO_EXTENSIONS.has(extension) || extension === 'pdf') {
-          const kind = IMAGE_EXTENSIONS.has(extension) ? 'image' : VIDEO_EXTENSIONS.has(extension) ? 'video' : AUDIO_EXTENSIONS.has(extension) ? 'audio' : 'pdf'
+        if (IMAGE_EXTENSIONS.has(extension) || VIDEO_EXTENSIONS.has(extension) || AUDIO_EXTENSIONS.has(extension)) {
+          const kind = IMAGE_EXTENSIONS.has(extension) ? 'image' : VIDEO_EXTENSIONS.has(extension) ? 'video' : 'audio'
           const url = await getCosObjectUrl(config, credentials, key, false, PREVIEW_URL_EXPIRES_SECONDS)
           const body: CosObjectPreviewResponse = { ok: true, kind, url }
           sendJson(response, 200, body)
           return
         }
-        if (CI_DOCUMENT_EXTENSIONS.has(extension)) {
+        if (isCiDocumentPreviewExtension(extension)) {
           const url = await getCosObjectUrl(config, credentials, key, false, PREVIEW_URL_EXPIRES_SECONDS, undefined, {
             'ci-process': 'doc-preview',
             dstType: 'html',

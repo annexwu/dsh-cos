@@ -37,6 +37,7 @@ afterEach(async () => {
   container.remove()
   document.documentElement.lang = ''
   delete reactGlobal.IS_REACT_ACT_ENVIRONMENT
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -130,6 +131,49 @@ describe('COS storage page', () => {
     expect(lastRequest).toEqual({ path: 'reports/' })
     expect(container.textContent).toContain('当前目录为空')
     expect(container.textContent).toContain('reports')
+  })
+
+  it('opens PDF documents in the preview modal instead of a new page', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/uploads/list')) return Promise.resolve(response({ ok: true, tasks: [] }))
+      if (url.endsWith('/objects/preview')) {
+        return Promise.resolve(response({
+          ok: true,
+          kind: 'ci-document',
+          url: 'https://example-1250000000.cos.ap-shanghai.myqcloud.com/report.pdf?ci-process=doc-preview&dstType=html',
+        }))
+      }
+      return Promise.resolve(response({
+        ok: true,
+        bucket: 'example-1250000000',
+        region: 'ap-shanghai',
+        rootPrefix: '',
+        customDomain: '',
+        path: '',
+        items: [{
+          kind: 'file',
+          name: 'report.pdf',
+          key: 'report.pdf',
+          path: 'report.pdf',
+          size: 1024,
+        }],
+      }))
+    })
+    const openWindow = vi.spyOn(window, 'open').mockReturnValue(null)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => root.render(<CosStoragePage controller={controller} />))
+    await act(async () => controller.toggle())
+    await settle()
+
+    const file = container.querySelector<HTMLElement>('[title="report.pdf"]')!
+    await act(async () => file.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })))
+    await settle()
+
+    const frame = document.querySelector<HTMLIFrameElement>('iframe[title="Document preview"]')
+    expect(frame?.src).toContain('ci-process=doc-preview')
+    expect(frame?.getAttribute('sandbox')).toContain('allow-same-origin')
+    expect(openWindow).not.toHaveBeenCalled()
   })
 
   it('uses the returned marker when loading the next page', async () => {

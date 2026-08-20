@@ -3,6 +3,7 @@ import type { CosStorageItem, CosObjectPreviewResponse } from '../protocol.ts'
 import { CosStorageApiError, previewObject } from './api.ts'
 import type { StorageCopy } from './storage-copy.ts'
 import { formatBytes } from './storage-format.ts'
+import { isCiDocumentPreviewExtension } from '../preview-policy.ts'
 
 interface PreviewModalProps {
   item: CosStorageItem
@@ -17,8 +18,19 @@ function errorText(error: unknown, copy: StorageCopy, item: CosStorageItem): str
   const message = error instanceof CosStorageApiError ? error.message : copy.previewFailed
   if (message.includes('文本预览限制')) return copy.previewTextTooLarge
   const extension = item.name.slice(item.name.lastIndexOf('.') + 1).toLowerCase()
-  if (new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'wps', 'et', 'dps']).has(extension)) return copy.previewCiUnavailable
+  if (isCiDocumentPreviewExtension(extension)) return copy.previewCiUnavailable
   return message
+}
+
+const PREVIEW_FRAME_SANDBOX = 'allow-forms allow-popups allow-scripts'
+
+export function previewFrameSandbox(url: string, parentOrigin = window.location.origin): string {
+  try {
+    const previewOrigin = new URL(url, `${parentOrigin}/`).origin
+    return previewOrigin === parentOrigin ? PREVIEW_FRAME_SANDBOX : `${PREVIEW_FRAME_SANDBOX} allow-same-origin`
+  } catch {
+    return PREVIEW_FRAME_SANDBOX
+  }
 }
 
 function ImagePreview({ url, copy }: { url: string; copy: StorageCopy }): React.JSX.Element {
@@ -53,7 +65,7 @@ function PreviewContent({ response, copy }: { response: CosObjectPreviewResponse
   if (response.kind === 'video' && response.url) return <video className="dsh-cos-preview__video" controls src={response.url} />
   if (response.kind === 'audio' && response.url) return <audio className="dsh-cos-preview__audio" controls src={response.url} />
   if (response.kind === 'pdf' && response.url) return <iframe className="dsh-cos-preview__frame" title="PDF preview" src={response.url} />
-  if (response.kind === 'ci-document' && response.url) return <iframe className="dsh-cos-preview__frame" title="Document preview" sandbox="allow-forms allow-popups allow-scripts" src={response.url} />
+  if (response.kind === 'ci-document' && response.url) return <iframe className="dsh-cos-preview__frame" title="Document preview" sandbox={previewFrameSandbox(response.url)} src={response.url} />
   if (response.kind === 'ci-unavailable') return <div className="dsh-cos-preview__ci-unavailable"><span aria-hidden="true">!</span><h3>{copy.previewCiUnavailableTitle}</h3><p>{copy.previewCiUnavailable}</p></div>
   return <div className="dsh-cos-preview__state">{response.message}</div>
 }

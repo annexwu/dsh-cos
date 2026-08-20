@@ -27,8 +27,6 @@ export interface CosStoragePageProps {
   onStartConversation?: (item: CosStorageItem) => Promise<void>
 }
 
-const DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'wps', 'et', 'dps'])
-
 interface SelectionLayout {
   firstLeft: number
   firstTop: number
@@ -200,39 +198,12 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
     setSelectedKeys(new Set())
   }
 
-  const isDocument = (item: CosStorageItem) => {
-    const extension = item.name.slice(item.name.lastIndexOf('.') + 1).toLowerCase()
-    return item.kind === 'file' && DOCUMENT_EXTENSIONS.has(extension)
-  }
-
-  const openItem = async (item: CosStorageItem) => {
+  const openItem = (item: CosStorageItem) => {
     if (item.kind === 'folder') {
       navigate(item.path)
       return
     }
-    if (!isDocument(item)) {
-      setPreviewItem(item)
-      return
-    }
-    const openedWindow = window.open('', '_blank')
-    try {
-      const response = await getObjectUrl({ kind: 'file', key: item.key, download: true })
-      if (openedWindow !== null) {
-        openedWindow.opener = null
-        openedWindow.location.href = response.url
-        return
-      }
-      const anchor = document.createElement('a')
-      anchor.href = response.url
-      anchor.target = '_blank'
-      anchor.rel = 'noopener'
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-    } catch (openError) {
-      openedWindow?.close()
-      setNotice({ kind: 'error', text: errorMessage(openError) })
-    }
+    setPreviewItem(item)
   }
 
   const breadcrumbs = useMemo(() => {
