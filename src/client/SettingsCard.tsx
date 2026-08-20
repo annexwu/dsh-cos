@@ -48,7 +48,11 @@ function messageOf(error: unknown): string {
   return error instanceof CosStorageApiError ? error.message : '操作失败，请稍后重试。'
 }
 
-export function SettingsCard(): React.JSX.Element {
+export interface SettingsCardProps {
+  onSaved?: (config: CosStorageConfigView) => void
+}
+
+export function SettingsCard({ onSaved }: SettingsCardProps = {}): React.JSX.Element {
   const copy = useMemo(getCopy, [])
   const [expanded, setExpanded] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -81,8 +85,10 @@ export function SettingsCard(): React.JSX.Element {
   const handleSave = async () => {
     setBusy('save')
     setFeedback(undefined)
+    let savedConfig: CosStorageConfigView | undefined
     try {
       const response = await saveConfig(requestOf(form))
+      savedConfig = response.config
       setConfig(response.config)
       setForm(toForm(response.config))
       setFeedback({ kind: 'success', text: copy.saved })
@@ -91,6 +97,7 @@ export function SettingsCard(): React.JSX.Element {
     } finally {
       setBusy(undefined)
     }
+    if (savedConfig !== undefined) onSaved?.(savedConfig)
   }
 
   const handleTest = async () => {
@@ -107,6 +114,7 @@ export function SettingsCard(): React.JSX.Element {
   }
 
   const credentialsConfigured = config?.secretIdConfigured === true && config.secretKeyConfigured === true
+  const connectionConfigured = config !== undefined && credentialsConfigured && config.bucket.trim() !== '' && config.region.trim() !== ''
   const credentialsWritable = config?.credentialsWritable !== false
   const secretPlaceholder = credentialsConfigured ? copy.secretPlaceholder : copy.secretNewPlaceholder
   const disabled = loading || busy !== undefined
@@ -133,8 +141,8 @@ export function SettingsCard(): React.JSX.Element {
         <div className="dsh-cos-settings-card__body">
           <div className="dsh-cos-settings-card__section-title">{copy.settingsReadyTitle}</div>
 
-          <div className={`dsh-cos-settings-card__credential-state ${credentialsConfigured ? 'is-ready' : 'is-missing'}`}>
-            {credentialsConfigured ? copy.credentialsConfigured : copy.credentialsMissing}
+          <div className={`dsh-cos-settings-card__credential-state ${connectionConfigured ? 'is-ready' : 'is-missing'}`}>
+            {connectionConfigured ? copy.connectionConfigured : copy.connectionMissing}
             {!credentialsWritable && <div>{copy.credentialsReadOnly}</div>}
           </div>
 

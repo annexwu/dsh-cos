@@ -800,8 +800,13 @@ html[data-dsh-cos-storage-active] [class*='centerCol'] > :not([data-dsh-cos-stor
 .dsh-cos-preview__state { display: flex; min-height: 100%; align-items: center; justify-content: center; padding: 28px; color: #737986; font-size: 13px; text-align: center; }
 .dsh-cos-preview__state.is-error { color: #bf4242; background: #fff7f7; }
 .dsh-cos-preview__ci-unavailable {
+  box-sizing: border-box;
   width: min(520px, calc(100% - 64px));
-  padding: 12px 0 16px;
+  padding: 32px 36px 34px;
+  border: 1px solid #e6e8eb;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .18);
   color: #4d5563;
   text-align: center;
 }
@@ -1237,6 +1242,51 @@ html[data-dsh-cos-storage-active] [class*='centerCol'] > :not([data-dsh-cos-stor
   background: var(--dsw-alias-state-business-primary, #315efb);
   color: #fff;
 }
+.dsh-cos-settings-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 20, 28, .42);
+  backdrop-filter: blur(2px);
+}
+.dsh-cos-settings-modal {
+  display: flex;
+  width: min(720px, 100%);
+  max-height: min(780px, calc(100% - 24px));
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2, #e1e4e8);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-base, #fff);
+  color: var(--dsw-alias-label-primary, #17191c);
+  box-shadow: 0 22px 70px rgba(12, 18, 28, .26);
+}
+.dsh-cos-settings-modal > header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2, #e6e8eb);
+}
+.dsh-cos-settings-modal > header h2 { margin: 0; font-size: 18px; }
+.dsh-cos-settings-modal > header button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #626a76);
+  cursor: pointer;
+  font-size: 24px;
+}
+.dsh-cos-settings-modal > header button:hover { background: var(--dsw-alias-interactive-bg-hover, #f1f3f6); }
+.dsh-cos-settings-modal__body { min-height: 0; padding: 18px 22px 22px; overflow: auto; }
 .dsh-cos-upload-backdrop {
   position: absolute;
   inset: 0;

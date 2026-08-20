@@ -60,6 +60,8 @@ export interface StorageCopy {
   loading: string
   loadFailed: string
   retry: string
+  configure: string
+  configureTitle: string
   emptyTitle: string
   emptyDescription: string
   pageSummary: (page: number, count: number) => string
@@ -188,6 +190,8 @@ const copies: Record<'zh' | 'en', StorageCopy> = {
     loading: '正在加载文件…',
     loadFailed: '加载失败',
     retry: '重试',
+    configure: '去配置',
+    configureTitle: '配置 COS 云存储',
     emptyTitle: '当前目录为空',
     emptyDescription: '这里还没有文件或文件夹。',
     pageSummary: (page, count) => `第 ${page} 页 · 本页 ${count} 项`,
@@ -316,6 +320,8 @@ const copies: Record<'zh' | 'en', StorageCopy> = {
     loading: 'Loading files…',
     loadFailed: 'Failed to load',
     retry: 'Retry',
+    configure: 'Configure',
+    configureTitle: 'Configure COS Storage',
     emptyTitle: 'This folder is empty',
     emptyDescription: 'There are no files or folders here yet.',
     pageSummary: (page, count) => `Page ${page} · ${count} items`,

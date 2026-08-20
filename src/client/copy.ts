@@ -29,8 +29,8 @@ export interface Copy {
   regionPlaceholder: string
   prefixPlaceholder: string
   domainPlaceholder: string
-  credentialsConfigured: string
-  credentialsMissing: string
+  connectionConfigured: string
+  connectionMissing: string
   credentialsReadOnly: string
   testConnection: string
   testing: string
@@ -61,7 +61,7 @@ const copies: Record<Language, Copy> = {
     prefix: '目录前缀',
     prefixDescription: '将指定目录作为 COS 云存储根目录。留空表示存储桶根目录，保存时会自动补齐末尾的 /。',
     customDomain: '自定义域名',
-    customDomainDescription: '用于后续文件访问的完整 HTTP/HTTPS 域名。留空时使用 COS 默认源站域名，管理请求不受影响。',
+    customDomainDescription: '推荐配置自定义域名，COS 默认域名不支持文件在线预览。如需预览，请填写已绑定到当前存储桶的自定义域名。留空时使用 COS 默认域名。',
     required: '必填',
     optional: '选填',
     secretPlaceholder: '已安全保存；留空保持不变',
@@ -70,8 +70,8 @@ const copies: Record<Language, Copy> = {
     regionPlaceholder: '例如 ap-guangzhou',
     prefixPlaceholder: '留空表示存储桶根目录',
     domainPlaceholder: '例如 https://static.example.com',
-    credentialsConfigured: '密钥已安全保存在 DSH Host 端，页面不会读取或回显原文。',
-    credentialsMissing: '尚未配置完整密钥，请填写 SecretId 和 SecretKey。',
+    connectionConfigured: '连接配置已完成。密钥已安全保存在 DSH Host 端，页面不会读取或回显原文。',
+    connectionMissing: '尚未完成连接配置，请填写 SecretId、SecretKey、存储桶和地域。',
     credentialsReadOnly: '当前密钥来自只读环境变量，不能在页面中覆盖。',
     testConnection: '测试连接',
     testing: '测试中…',
@@ -100,7 +100,7 @@ const copies: Record<Language, Copy> = {
     prefix: 'Directory prefix',
     prefixDescription: 'Use this directory as the storage root. Leave blank for the bucket root; a trailing / is added on save.',
     customDomain: 'Custom domain',
-    customDomainDescription: 'A full HTTP/HTTPS domain for future file access. Leave blank to use the default COS origin.',
+    customDomainDescription: 'A custom domain is recommended because COS default domains do not support online file preview. To preview files, enter a custom domain bound to this bucket. Leave blank to use the default COS domain.',
     required: 'Required',
     optional: 'Optional',
     secretPlaceholder: 'Stored securely; leave blank to keep it',
@@ -109,8 +109,8 @@ const copies: Record<Language, Copy> = {
     regionPlaceholder: 'For example, ap-guangzhou',
     prefixPlaceholder: 'Leave blank for the bucket root',
     domainPlaceholder: 'For example, https://static.example.com',
-    credentialsConfigured: 'Credentials are stored in the DSH Host and are never read back by this page.',
-    credentialsMissing: 'Credentials are incomplete. Enter both SecretId and SecretKey.',
+    connectionConfigured: 'Connection settings are complete. Credentials are stored in the DSH Host and are never read back by this page.',
+    connectionMissing: 'Connection settings are incomplete. Enter SecretId, SecretKey, bucket, and region.',
     credentialsReadOnly: 'Credentials come from read-only environment variables and cannot be overwritten here.',
     testConnection: 'Test connection',
     testing: 'Testing…',

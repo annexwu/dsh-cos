@@ -176,6 +176,73 @@ describe('COS storage page', () => {
     expect(openWindow).not.toHaveBeenCalled()
   })
 
+  it('opens inline settings for missing configuration and reloads after save', async () => {
+    let configured = false
+    let savedRequest: Record<string, unknown> | undefined
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/uploads/list')) return Promise.resolve(response({ ok: true, tasks: [] }))
+      if (url.endsWith('/objects/list')) {
+        return Promise.resolve(configured
+          ? response({ ok: true, bucket: 'example-1250000000', region: 'ap-shanghai', rootPrefix: '', customDomain: '', path: '', items: [] })
+          : response({ ok: false, error: { code: 'config-required', message: '请先配置 COS 存储桶和地域。' } }))
+      }
+      if (url.endsWith('/config') && init?.method === 'POST') {
+        savedRequest = JSON.parse(init.body as string) as Record<string, unknown>
+        configured = true
+        return Promise.resolve(response({
+          ok: true,
+          config: {
+            bucket: 'example-1250000000', region: 'ap-shanghai', prefix: '', customDomain: '',
+            secretIdConfigured: true, secretKeyConfigured: true, credentialsWritable: true,
+          },
+        }))
+      }
+      if (url.endsWith('/config')) {
+        return Promise.resolve(response({
+          ok: true,
+          config: {
+            bucket: '', region: '', prefix: '', customDomain: '',
+            secretIdConfigured: false, secretKeyConfigured: false, credentialsWritable: true,
+          },
+        }))
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => root.render(<CosStoragePage controller={controller} />))
+    await act(async () => controller.toggle())
+    await settle()
+
+    const configure = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '去配置')!
+    await act(async () => configure.click())
+    await settle()
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"][aria-labelledby="dsh-cos-settings-modal-title"]')!
+    expect(dialog.textContent).toContain('配置 COS 云存储')
+
+    const inputs = Array.from(dialog.querySelectorAll<HTMLInputElement>('input'))
+    const values = ['test-secret-id', 'test-secret-key', 'example-1250000000', 'ap-shanghai']
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      values.forEach((value, index) => {
+        setter?.call(inputs[index], value)
+        inputs[index].dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    })
+    const save = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '保存配置')!
+    await act(async () => save.click())
+    await settle()
+
+    expect(savedRequest).toMatchObject({
+      secretId: 'test-secret-id',
+      secretKey: 'test-secret-key',
+      bucket: 'example-1250000000',
+      region: 'ap-shanghai',
+    })
+    expect(container.querySelector('[role="dialog"][aria-labelledby="dsh-cos-settings-modal-title"]')).toBeNull()
+    expect(container.textContent).toContain('当前目录为空')
+  })
+
   it('uses the returned marker when loading the next page', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
       if (url.endsWith('/uploads/list')) return Promise.resolve(response({ ok: true, tasks: [] }))

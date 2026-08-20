@@ -74,6 +74,8 @@ describe('SettingsCard', () => {
     expect(container.querySelectorAll('.dsh-cos-settings-card__field')).toHaveLength(6)
     expect(container.textContent).toContain('名称格式为 BucketName-APPID')
     expect(container.textContent).toContain('留空表示存储桶根目录')
+    expect(container.textContent).toContain('COS 默认域名不支持文件在线预览')
+    expect(container.textContent).toContain('连接配置已完成')
     expect(container.textContent).toContain('密钥已安全保存在 DSH Host 端')
     const createBucket = container.querySelector<HTMLAnchorElement>('a[href="https://cloud.tencent.com/product/cos"]')
     expect(createBucket?.textContent).toBe('创建存储桶')
@@ -81,6 +83,18 @@ describe('SettingsCard', () => {
     expect(createBucket?.rel).toBe('noopener noreferrer')
     expect(container.textContent).not.toContain('stored-secret')
     expect(fetchMock).toHaveBeenCalledWith('/api/dsh-cos/config', expect.objectContaining({ credentials: 'same-origin' }))
+  })
+
+  it('reports an incomplete connection when the bucket is missing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      ok: true,
+      config: { ...configured, bucket: '' },
+    })))
+
+    await renderCard()
+
+    expect(container.textContent).toContain('请填写 SecretId、SecretKey、存储桶和地域')
+    expect(container.querySelector('.dsh-cos-settings-card__credential-state')?.classList.contains('is-missing')).toBe(true)
   })
 
   it('submits changed settings while blank secret fields keep stored credentials', async () => {

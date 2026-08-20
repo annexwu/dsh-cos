@@ -17,6 +17,7 @@ import { LinkModal } from './LinkModal.tsx'
 import { NewFolderModal } from './NewFolderModal.tsx'
 import { ObjectDetailModal } from './ObjectDetailModal.tsx'
 import { PreviewModal } from './PreviewModal.tsx'
+import { SettingsCard } from './SettingsCard.tsx'
 import { TaskDrawer } from './TaskDrawer.tsx'
 import { UploadCoordinator, type UploadConflictPolicy } from './upload-coordinator.ts'
 import { UploadModal } from './UploadModal.tsx'
@@ -50,8 +51,21 @@ function ToolbarIcon({ kind }: { kind: 'upload' | 'folder' | 'tasks' | 'refresh'
   return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16 7a6.5 6.5 0 1 0 .3 5M16 3v4h-4" /></svg>
 }
 
+interface LoadFailure {
+  message: string
+  code?: string
+}
+
+const CONFIGURATION_ERROR_CODES = new Set(['config-required', 'credentials-missing'])
+
+function loadFailure(error: unknown): LoadFailure {
+  return error instanceof CosStorageApiError
+    ? { message: error.message, code: error.code }
+    : { message: 'COS 云存储暂时不可用，请稍后重试。' }
+}
+
 function errorMessage(error: unknown): string {
-  return error instanceof CosStorageApiError ? error.message : 'COS 云存储暂时不可用，请稍后重试。'
+  return loadFailure(error).message
 }
 
 async function copyText(value: string): Promise<void> {
@@ -80,7 +94,8 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
   const [refreshKey, setRefreshKey] = useState(0)
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<CosStorageListResponse>()
-  const [error, setError] = useState<string>()
+  const [error, setError] = useState<LoadFailure>()
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
   const [detailItem, setDetailItem] = useState<CosStorageItem>()
   const [previewItem, setPreviewItem] = useState<CosStorageItem>()
   const [menuKey, setMenuKey] = useState<string>()
@@ -178,7 +193,7 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
     }).then((response) => {
       if (active) setData(response)
     }).catch((loadError: unknown) => {
-      if (active) setError(errorMessage(loadError))
+      if (active) setError(loadFailure(loadError))
     }).finally(() => {
       if (active) setLoading(false)
     })
@@ -582,8 +597,10 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
           <div className="dsh-cos-storage-state is-error" role="alert">
             <span className="dsh-cos-storage-state__icon">!</span>
             <strong>{storageCopy.loadFailed}</strong>
-            <p>{error}</p>
-            <button type="button" onClick={() => setRefreshKey(value => value + 1)}>{storageCopy.retry}</button>
+            <p>{error.message}</p>
+            {error.code !== undefined && CONFIGURATION_ERROR_CODES.has(error.code)
+              ? <button type="button" onClick={() => setSettingsModalOpen(true)}>{storageCopy.configure}</button>
+              : <button type="button" onClick={() => setRefreshKey(value => value + 1)}>{storageCopy.retry}</button>}
           </div>
         )}
 
@@ -742,6 +759,30 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
           onCreate={(expiresSeconds, domain) => createLink(linkItem, expiresSeconds, domain)}
           onClose={() => setLinkItem(undefined)}
         />
+      )}
+      {settingsModalOpen && (
+        <div className="dsh-cos-settings-backdrop" role="presentation" onMouseDown={() => setSettingsModalOpen(false)}>
+          <section
+            className="dsh-cos-settings-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dsh-cos-settings-modal-title"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <header>
+              <h2 id="dsh-cos-settings-modal-title">{storageCopy.configureTitle}</h2>
+              <button type="button" aria-label={storageCopy.close} onClick={() => setSettingsModalOpen(false)}>×</button>
+            </header>
+            <div className="dsh-cos-settings-modal__body">
+              <SettingsCard onSaved={() => {
+                setSettingsModalOpen(false)
+                setData(undefined)
+                setError(undefined)
+                setRefreshKey(value => value + 1)
+              }} />
+            </div>
+          </section>
+        </div>
       )}
       {uploadModalOpen && (
         <UploadModal
