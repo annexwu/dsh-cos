@@ -1,6 +1,6 @@
 {
   "name": "dsh-cos",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Tencent Cloud COS storage plugin for DeepSeek Harness",
   "type": "module",
   "repository": {

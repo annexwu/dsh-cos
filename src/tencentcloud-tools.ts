@@ -351,7 +351,7 @@ function scriptPath(script: RuntimeScript): string {
   return fileURLToPath(new URL(`../runtime/tencentcloud-cos/scripts/${script}`, import.meta.url))
 }
 
-function childEnvironment(credentials: CosCredentials, config: Config): NodeJS.ProcessEnv {
+export function createTencentCloudChildEnvironment(credentials: CosCredentials, config: Config, useElectronNodeRuntime = process.versions.electron !== undefined): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     NODE_ENV: 'production',
     ...(process.platform === 'win32'
@@ -367,6 +367,7 @@ function childEnvironment(credentials: CosCredentials, config: Config): NodeJS.P
     TENCENTCLOUD_SECRET_KEY: credentials.secretKey,
     KIKI: '0',
   }
+  if (useElectronNodeRuntime) environment.ELECTRON_RUN_AS_NODE = '1'
   if (config.bucket !== '') environment.TENCENT_COS_BUCKET = config.bucket
   if (config.region !== '') environment.TENCENT_COS_REGION = config.region
   return environment
@@ -378,7 +379,7 @@ async function runCli(script: RuntimeScript, action: string, parameters: Record<
   return new Promise((resolveResult, rejectResult) => {
     const child = spawn(process.execPath, args, {
       cwd: cwd ?? dirname(location),
-      env: childEnvironment(credentials, config),
+      env: createTencentCloudChildEnvironment(credentials, config),
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,

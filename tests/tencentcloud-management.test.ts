@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import { afterEach, describe, expect, it } from 'vitest'
 import { registerTencentCloudCosSkill } from '../src/tencentcloud-skill.ts'
-import { applyTencentCloudManagementDefaults, getTencentCloudManagementActionCatalog, parseTencentCloudManagementParameters, registerTencentCloudManagementTools, sanitizeTencentCloudManagementOutput } from '../src/tencentcloud-tools.ts'
+import { applyTencentCloudManagementDefaults, createTencentCloudChildEnvironment, getTencentCloudManagementActionCatalog, parseTencentCloudManagementParameters, registerTencentCloudManagementTools, sanitizeTencentCloudManagementOutput } from '../src/tencentcloud-tools.ts'
 
 const contexts: Context[] = []
 
@@ -38,6 +38,24 @@ describe('Tencent Cloud COS management catalog', () => {
     expect(() => parseTencentCloudManagementParameters({ Bucket: 'first', bucket: 'second' })).toThrow('conflicts')
     expect(() => parseTencentCloudManagementParameters({ Secret: 'not-allowed' })).toThrow('prohibited')
     expect(() => parseTencentCloudManagementParameters({ DatasetName: 'not-a-cli-flag' })).toThrow('valid CLI-style')
+  })
+
+  it('uses Electron Node mode for COS subprocesses only in desktop runtimes', () => {
+    const credentials = { secretId: 'test-secret-id', secretKey: 'test-secret-key' }
+    const config = { bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: '' }
+
+    const nodeEnvironment = createTencentCloudChildEnvironment(credentials, config, false)
+    const electronEnvironment = createTencentCloudChildEnvironment(credentials, config, true)
+
+    expect(nodeEnvironment).not.toHaveProperty('ELECTRON_RUN_AS_NODE')
+    expect(electronEnvironment).toMatchObject({
+      ELECTRON_RUN_AS_NODE: '1',
+      TENCENT_COS_BUCKET: 'storage-1250000000',
+      TENCENT_COS_REGION: 'ap-guangzhou',
+      TENCENTCLOUD_SECRET_ID: 'test-secret-id',
+      TENCENTCLOUD_SECRET_KEY: 'test-secret-key',
+    })
+    expect(electronEnvironment).not.toHaveProperty('PATH')
   })
 
   it('does not pass configured or explicit bucket scope to account-wide bucket discovery', () => {
