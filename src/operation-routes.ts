@@ -29,6 +29,7 @@ import type {
   CosObjectActionRequest,
   CosObjectPreviewRequest,
   CosObjectPreviewResponse,
+  CosTextPreviewEncoding,
   CosObjectUrlResponse,
   CosUploadCompleteResponse,
   CosUploadTaskActionRequest,
@@ -49,6 +50,7 @@ const API_OBJECT_URL = '/api/dsh-cos/objects/url'
 const API_OBJECT_PREVIEW = '/api/dsh-cos/objects/preview'
 const PREVIEW_URL_EXPIRES_SECONDS = 900
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
+const TEXT_PREVIEW_ENCODINGS = new Set<CosTextPreviewEncoding>(['utf-8', 'utf-16le', 'gb18030', 'big5', 'shift_jis', 'euc-kr'])
 const IMAGE_EXTENSIONS = new Set(['avif', 'bmp', 'gif', 'ico', 'jpeg', 'jpg', 'png', 'svg', 'webp'])
 const VIDEO_EXTENSIONS = new Set(['m4v', 'mov', 'mp4', 'ogv', 'webm'])
 const AUDIO_EXTENSIONS = new Set(['aac', 'flac', 'm4a', 'mp3', 'oga', 'ogg', 'opus', 'wav'])
@@ -136,7 +138,11 @@ function fileExtension(key: string): string {
 function parsePreviewRequest(value: unknown): CosObjectPreviewRequest {
   if (!isRecord(value)) throw new HttpError(400, 'invalid-request', '请求内容格式不正确。')
   if (stringField(value, 'kind', true) !== 'file') throw new HttpError(400, 'file-required', '只有文件可以预览。')
-  return { kind: 'file', key: stringField(value, 'key', true)! }
+  const encoding = stringField(value, 'encoding', false)
+  if (encoding !== undefined && !TEXT_PREVIEW_ENCODINGS.has(encoding as CosTextPreviewEncoding)) {
+    throw new HttpError(400, 'invalid-text-encoding', '文本预览编码不受支持。')
+  }
+  return { kind: 'file', key: stringField(value, 'key', true)!, encoding: encoding as CosTextPreviewEncoding | undefined }
 }
 
 function parseObjectAction(value: unknown): CosObjectActionRequest {
@@ -261,7 +267,7 @@ export function registerOperationRoutes(
         const extension = fileExtension(key)
         const credentials = await services.getCredentials()
         if (TEXT_EXTENSIONS.has(extension)) {
-          const text = await readCosObjectText(config, credentials, key, MAX_TEXT_PREVIEW_BYTES)
+          const text = await readCosObjectText(config, credentials, key, MAX_TEXT_PREVIEW_BYTES, input.encoding ?? 'utf-8')
           const body: CosObjectPreviewResponse = { ok: true, kind: 'text', text }
           sendJson(response, 200, body)
           return

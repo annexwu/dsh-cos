@@ -28,6 +28,7 @@ import {
   getHiddenActions,
   getRuntimeCredentials,
   getRuntimeMode,
+  getRuntimeUserAgent,
   parseCiRawError,
 } from './lib/ci_client.mjs';
 import {
@@ -107,7 +108,7 @@ const ServiceDomain = process.env.TENCENT_COS_SERVICE_DOMAIN;
 const Protocol = process.env.TENCENT_COS_PROTOCOL;
 
 const cosOptions = { SecretId, SecretKey };
-cosOptions.UserAgent = "skills/node_sdk_cos";
+cosOptions.UserAgent = getRuntimeUserAgent();
 if (Token) {
   cosOptions.SecurityToken = Token;
 }

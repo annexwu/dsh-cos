@@ -25,6 +25,9 @@ export interface RuntimeCredentials {
   token?: string
 }
 
+export const DEFAULT_USER_AGENT: string
+export function getRuntimeUserAgent(env?: NodeJS.ProcessEnv): string
+
 export function cosRequest(options: {
   method: string
   host: string

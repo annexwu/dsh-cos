@@ -76,22 +76,40 @@ export function apply(ctx: AttachmentClientContext): void {
     const controller = new CosStorageController()
     const disposers: Array<() => void> = []
     try {
-      const startConversation = async (item: CosStorageItem): Promise<void> => {
-        const sessionService = ctx.sessions as unknown as {
-          list: { getSnapshot(): { current: string | undefined; ids: string[] } }
-          open(sessionId: string): void
-        }
+      const sessionService = ctx.sessions as unknown as {
+        list: { getSnapshot(): { current: string | undefined; ids: string[] } }
+        open(sessionId: string): void
+      }
+      const currentSessionId = (): string => {
         const sessionList = sessionService.list.getSnapshot()
         const sessionId = sessionList.current ?? sessionList.ids.at(-1)
         if (sessionId === undefined) throw new Error('当前没有可用的会话，请先打开或新建一个会话。')
+        return sessionId
+      }
+      const startConversation = async (item: CosStorageItem): Promise<void> => {
+        const sessionId = currentSessionId()
         const response = await importCosAttachment({ sessionId, key: item.key, kind: item.kind })
         sessionService.open(sessionId)
         await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
         await createAttachmentAction(ctx, sessionId)(response.attachment)
         controller.close()
       }
+      const requestDocumentPreview = async (bucket: string): Promise<void> => {
+        const sessionId = currentSessionId()
+        sessionService.open(sessionId)
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+        const actx = ctx.sessions.scope(sessionId)
+        const input = actx.get('conversation')?.input?.for(actx)
+        if (input === undefined) throw new Error('会话输入框暂不可用，请稍后重试。')
+        const state = input.state.getSnapshot()
+        actx.emit('slash/input-insert-text', {
+          text: `请协助为 COS 存储桶 ${bucket} 开通文档预览服务，并说明开通步骤。`,
+          span: { start: state.draft.length, end: state.draft.length, draftRev: state.draftRev },
+        })
+        controller.close()
+      }
       disposers.push(mountSidebarEntry(controller))
-      disposers.push(mountPanel(controller, startConversation))
+      disposers.push(mountPanel(controller, startConversation, requestDocumentPreview))
     } catch (error) {
       console.error('[dsh-cos] UI mount failed', error)
     }

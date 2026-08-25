@@ -8,6 +8,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { JsonValue, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { Config } from './config.ts'
 import type { CosCredentials } from './cos-client.ts'
+import { DSH_COS_USER_AGENT } from './user-agent.ts'
 
 const MAX_PARAMETER_COUNT = 50
 const MAX_PARAMETER_VALUE_BYTES = 256 * 1024
@@ -365,6 +366,7 @@ export function createTencentCloudChildEnvironment(credentials: CosCredentials, 
       : {}),
     TENCENTCLOUD_SECRET_ID: credentials.secretId,
     TENCENTCLOUD_SECRET_KEY: credentials.secretKey,
+    DSH_COS_USER_AGENT,
     KIKI: '0',
   }
   if (useElectronNodeRuntime) environment.ELECTRON_RUN_AS_NODE = '1'

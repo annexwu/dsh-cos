@@ -2,6 +2,7 @@ import { Readable } from 'node:stream'
 import COS from 'cos-nodejs-sdk-v5'
 import type { Config } from './config.ts'
 import type { CosStorageItem } from './protocol.ts'
+import { DSH_COS_USER_AGENT } from './user-agent.ts'
 
 const LIST_PAGE_SIZE = 100
 
@@ -15,11 +16,12 @@ export interface CosStorageListResult {
   nextMarker?: string
 }
 
-function createCosClient(credentials: CosCredentials): COS {
+export function createCosClient(credentials: CosCredentials): COS {
   return new COS({
     SecretId: credentials.secretId,
     SecretKey: credentials.secretKey,
     Timeout: 15_000,
+    UserAgent: DSH_COS_USER_AGENT,
   })
 }
 
@@ -420,11 +422,16 @@ export async function getCosDownloadStream(
   }
 }
 
+export function decodeCosObjectText(bytes: Uint8Array, encoding: string): string {
+  return new TextDecoder(encoding, { fatal: false }).decode(bytes)
+}
+
 export async function readCosObjectText(
   config: Config,
   credentials: CosCredentials,
   key: string,
   maxBytes: number,
+  encoding = 'utf-8',
 ): Promise<string> {
   const { stream, contentLength } = await getCosDownloadStream(config, credentials, key)
   if (contentLength !== undefined && contentLength > maxBytes) {
@@ -446,7 +453,7 @@ export async function readCosObjectText(
   } finally {
     stream.destroy()
   }
-  return Buffer.concat(chunks).toString('utf8')
+  return decodeCosObjectText(Buffer.concat(chunks), encoding)
 }
 
 export type CosDocumentPreviewStatus = 'available' | 'not-enabled' | 'unavailable'
@@ -473,7 +480,10 @@ export async function probeCosDocumentPreview(url: string): Promise<CosDocumentP
   const timeout = setTimeout(() => controller.abort(), 15_000)
   try {
     const response = await fetch(url, {
-      headers: { Range: 'bytes=0-16383' },
+      headers: {
+        Range: 'bytes=0-16383',
+        'User-Agent': DSH_COS_USER_AGENT,
+      },
       redirect: 'follow',
       signal: controller.signal,
     })

@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
-import { cosRequest, parseCiRawError } from '../runtime/tencentcloud-cos/scripts/lib/ci_client.mjs'
+import { cosRequest, getRuntimeUserAgent, parseCiRawError } from '../runtime/tencentcloud-cos/scripts/lib/ci_client.mjs'
 import { normalizeRuntimeError, runtimeFailurePayload } from '../runtime/tencentcloud-cos/scripts/lib/runtime_error.mjs'
 import { formatTencentCloudManagementFailure, sanitizeTencentCloudManagementOutput } from '../src/tencentcloud-tools.ts'
+import { DSH_COS_USER_AGENT } from '../src/user-agent.ts'
 
 describe('Tencent Cloud runtime errors', () => {
+  it('uses the host UA and falls back to an identifiable value', () => {
+    expect(getRuntimeUserAgent({ DSH_COS_USER_AGENT: DSH_COS_USER_AGENT } as NodeJS.ProcessEnv)).toBe(DSH_COS_USER_AGENT)
+    expect(getRuntimeUserAgent({} as NodeJS.ProcessEnv)).toBe('dsh-cos/unknown dsh/unknown cos-nodejs-sdk-v5/unknown')
+  })
+
   it('keeps the raw JSON error body and request identifiers from HTTP responses', async () => {
+    vi.stubEnv('DSH_COS_USER_AGENT', DSH_COS_USER_AGENT)
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       Code: 'InvalidArgument',
       Message: 'Dataset binding is invalid.',
@@ -38,8 +45,11 @@ describe('Tencent Cloud runtime errors', () => {
         pathname: '/datasetbinding',
       })
       expect(raw.body).toContain('Dataset binding is invalid.')
+      const requestHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+      expect(requestHeaders.get('user-agent')).toBe(DSH_COS_USER_AGENT)
     } finally {
       fetchMock.mockRestore()
+      vi.unstubAllEnvs()
     }
   })
 

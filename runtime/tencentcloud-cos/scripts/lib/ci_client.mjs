@@ -18,6 +18,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_SERVICE_HOST = 'service.cos.myqcloud.com';
+export const DEFAULT_USER_AGENT = 'dsh-cos/unknown dsh/unknown cos-nodejs-sdk-v5/unknown';
+
+export function getRuntimeUserAgent(env = process.env) {
+  return String(env.DSH_COS_USER_AGENT || '').trim() || DEFAULT_USER_AGENT;
+}
+
 export const STRICT_HIDDEN_ACTIONS = Object.freeze([
   'delete',
   'delete-multiple',
@@ -424,6 +430,7 @@ export async function cosRequest({
         ...(creds.token ? { "x-cos-security-token": creds.token } : {}),
         ...(body != null ? { "Content-Type": "application/json" } : {}),
         ...extraHeaders,
+        "User-Agent": getRuntimeUserAgent(),
       },
       body,
       signal: controller.signal,

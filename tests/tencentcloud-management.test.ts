@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -5,6 +6,7 @@ import SkillRegistry from '@deepseek-ai/dsh-skill'
 import { afterEach, describe, expect, it } from 'vitest'
 import { registerTencentCloudCosSkill } from '../src/tencentcloud-skill.ts'
 import { applyTencentCloudManagementDefaults, createTencentCloudChildEnvironment, getTencentCloudManagementActionCatalog, parseTencentCloudManagementParameters, registerTencentCloudManagementTools, sanitizeTencentCloudManagementOutput } from '../src/tencentcloud-tools.ts'
+import { DSH_COS_USER_AGENT } from '../src/user-agent.ts'
 
 const contexts: Context[] = []
 
@@ -54,8 +56,32 @@ describe('Tencent Cloud COS management catalog', () => {
       TENCENT_COS_REGION: 'ap-guangzhou',
       TENCENTCLOUD_SECRET_ID: 'test-secret-id',
       TENCENTCLOUD_SECRET_KEY: 'test-secret-key',
+      DSH_COS_USER_AGENT,
     })
     expect(electronEnvironment).not.toHaveProperty('PATH')
+
+    const storageRuntime = readFileSync(resolve(process.cwd(), 'runtime/tencentcloud-cos/scripts/cos_node.mjs'), 'utf8')
+    expect(storageRuntime).toContain('cosOptions.UserAgent = getRuntimeUserAgent()')
+    expect(storageRuntime).not.toContain('skills/node_sdk_cos')
+  })
+
+  it('loads the storage Skill entrypoint and reports unknown actions as structured JSON', () => {
+    const script = resolve(process.cwd(), 'runtime/tencentcloud-cos/scripts/cos_node.mjs')
+    const result = spawnSync(process.execPath, [script, '__unknown_action__'], {
+      env: {
+        ...process.env,
+        TENCENTCLOUD_SECRET_ID: 'test-secret-id',
+        TENCENTCLOUD_SECRET_KEY: 'test-secret-key',
+        DSH_COS_USER_AGENT,
+      },
+      encoding: 'utf8',
+    })
+
+    expect(result.status).toBe(1)
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      success: false,
+      error: '未知操作：__unknown_action__',
+    })
   })
 
   it('does not pass configured or explicit bucket scope to account-wide bucket discovery', () => {

@@ -71,10 +71,13 @@ export interface StorageCopy {
   preview: string
   previewTitle: string
   previewLoading: string
+  previewUnsupportedTitle: string
   previewUnsupported: string
   previewTextTooLarge: string
+  previewTextEncoding: string
   previewCiUnavailableTitle: string
   previewCiUnavailable: string
+  previewRequestEnable: string
   previewFailed: string
   download: string
   startConversation: string
@@ -201,10 +204,13 @@ const copies: Record<'zh' | 'en', StorageCopy> = {
     preview: '预览',
     previewTitle: '文件预览',
     previewLoading: '正在加载预览…',
-    previewUnsupported: '此文件类型暂不支持预览，可下载后在本地查看。',
+    previewUnsupportedTitle: '暂不支持预览',
+    previewUnsupported: '此文件类型暂不支持在线预览。你可以下载文件后在本地查看。',
     previewTextTooLarge: '文本文件超过 2 MB，暂不支持在线预览。',
+    previewTextEncoding: '编码',
     previewCiUnavailableTitle: '暂无法预览此文档',
     previewCiUnavailable: '请先在 COS 桶的“数据处理 → 文档处理”中开通文档预览服务；开通后重新打开文件即可预览。文件超过 200 MB 或服务暂时不可用时，也会出现此提示。',
+    previewRequestEnable: '让 AI 协助开通',
     previewFailed: '预览加载失败，请稍后重试。',
     download: '下载',
     startConversation: '发起会话',
@@ -331,10 +337,13 @@ const copies: Record<'zh' | 'en', StorageCopy> = {
     preview: 'Preview',
     previewTitle: 'File preview',
     previewLoading: 'Loading preview…',
-    previewUnsupported: 'This file type cannot be previewed. Download it to view locally.',
+    previewUnsupportedTitle: 'Preview unavailable',
+    previewUnsupported: 'This file type cannot be previewed online. Download it to view locally.',
     previewTextTooLarge: 'Text files larger than 2 MB cannot be previewed online.',
+    previewTextEncoding: 'Encoding',
     previewCiUnavailableTitle: 'This document cannot be previewed yet',
     previewCiUnavailable: 'Enable Document Preview under COS Data Processing, then reopen the file. This notice also appears when the file exceeds 200 MB or the service is temporarily unavailable.',
+    previewRequestEnable: 'Ask AI to help enable it',
     previewFailed: 'Unable to load preview. Try again later.',
     download: 'Download',
     startConversation: 'Start conversation',

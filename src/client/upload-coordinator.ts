@@ -97,7 +97,6 @@ export class UploadCoordinator {
           this.uploadUrls.set(response.task.id, response.uploadUrl)
           this.setTask(response.task)
           accepted += 1
-          this.pump()
           break
         } catch (error) {
           if (error instanceof CosStorageApiError && error.code === 'object-exists') {
@@ -116,6 +115,7 @@ export class UploadCoordinator {
         }
       }
     }
+    if (!this.disposed) this.pump()
     return { accepted, skipped, errors }
   }
 

@@ -159,6 +159,9 @@ describe('UploadCoordinator', () => {
     expect(result).toEqual({ accepted: 26, skipped: 0, errors: [] })
     expect(pending.size).toBe(3)
     expect(coordinator.getSnapshot().filter(task => task.status === 'queued')).toHaveLength(23)
+    expect(Math.max(...vi.mocked(api.createUploadTask).mock.invocationCallOrder)).toBeLessThan(
+      Math.min(...vi.mocked(api.uploadTaskContent).mock.invocationCallOrder),
+    )
 
     while (pending.size > 0) {
       const taskId = pending.keys().next().value as string

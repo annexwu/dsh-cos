@@ -17,7 +17,11 @@ function conversationColumn(): HTMLElement | undefined {
   return document.querySelector<HTMLElement>(CONVERSATION_COLUMN_SELECTOR) ?? undefined
 }
 
-export function mountPanel(controller: CosStorageController, onStartConversation?: (item: CosStorageItem) => Promise<void>): () => void {
+export function mountPanel(
+  controller: CosStorageController,
+  onStartConversation?: (item: CosStorageItem) => Promise<void>,
+  onRequestDocumentPreview?: (bucket: string) => Promise<void>,
+): () => void {
   let root: Root | undefined
   let container: HTMLDivElement | undefined
   let announcingCompatibility = false
@@ -36,7 +40,11 @@ export function mountPanel(controller: CosStorageController, onStartConversation
     container.dataset.dshCosStorageView = ''
     column.appendChild(container)
     root = createRoot(container)
-    root.render(<CosStoragePage controller={controller} onStartConversation={onStartConversation} />)
+    root.render(<CosStoragePage
+      controller={controller}
+      onStartConversation={onStartConversation}
+      onRequestDocumentPreview={onRequestDocumentPreview}
+    />)
   }
 
   const waitObserver = new MutationObserver(ensure)

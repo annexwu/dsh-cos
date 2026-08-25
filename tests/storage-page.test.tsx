@@ -133,6 +133,37 @@ describe('COS storage page', () => {
     expect(container.textContent).toContain('reports')
   })
 
+  it('renders an item menu in a top-layer portal instead of the clipped storage column', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/uploads/list')) return Promise.resolve(response({ ok: true, tasks: [] }))
+      return Promise.resolve(response({
+        ok: true,
+        bucket: 'example-1250000000',
+        region: 'ap-shanghai',
+        rootPrefix: '',
+        customDomain: '',
+        path: '',
+        items: [{ kind: 'folder', name: 'reports', key: 'reports/', path: 'reports/', size: 0 }],
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await act(async () => root.render(<CosStoragePage controller={controller} />))
+    await act(async () => controller.toggle())
+    await settle()
+
+    const more = container.querySelector<HTMLButtonElement>('[aria-label="reports 属性"]')!
+    vi.spyOn(more, 'getBoundingClientRect').mockReturnValue({ bottom: 120, right: 460 } as DOMRect)
+    await act(async () => more.click())
+
+    const menu = document.body.querySelector<HTMLElement>('.dsh-cos-storage-item__menu')!
+    expect(menu.parentElement).toBe(document.body)
+    expect(container.contains(menu)).toBe(false)
+    expect(menu.style).toMatchObject({ top: '126px', left: '292px' })
+    expect(menu.textContent).toContain('属性')
+    expect(menu.textContent).toContain('删除')
+  })
+
   it('opens PDF documents in the preview modal instead of a new page', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
       if (url.endsWith('/uploads/list')) return Promise.resolve(response({ ok: true, tasks: [] }))

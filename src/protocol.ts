@@ -148,10 +148,12 @@ export interface CosObjectUrlResponse {
 }
 
 export type CosPreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'text' | 'ci-document' | 'ci-unavailable' | 'unsupported'
+export type CosTextPreviewEncoding = 'utf-8' | 'utf-16le' | 'gb18030' | 'big5' | 'shift_jis' | 'euc-kr'
 
 export interface CosObjectPreviewRequest {
   kind: 'file'
   key: string
+  encoding?: CosTextPreviewEncoding
 }
 
 export interface CosObjectPreviewResponse {

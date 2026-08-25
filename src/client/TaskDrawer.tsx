@@ -24,6 +24,16 @@ function progressOf(task: CosUploadTask): number {
   return Math.max(0, Math.min(100, Math.round((task.uploadedBytes / task.size) * 100)))
 }
 
+function ChevronIcon({ direction }: { direction: 'up' | 'down' }): React.JSX.Element {
+  return <svg className="dsh-cos-task-header__icon" viewBox="0 0 20 20" aria-hidden="true">
+    <path d={direction === 'up' ? 'M5 12l5-5 5 5' : 'M5 8l5 5 5-5'} />
+  </svg>
+}
+
+function CloseIcon(): React.JSX.Element {
+  return <svg className="dsh-cos-task-header__icon" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
+}
+
 export function TaskDrawer(props: TaskDrawerProps): React.JSX.Element {
   const { tasks, copy, onClose, collapsed, onCollapsedChange } = props
   const [actionError, setActionError] = useState<string>()
@@ -57,8 +67,8 @@ export function TaskDrawer(props: TaskDrawerProps): React.JSX.Element {
     <header className="dsh-cos-task-header">
       <div><h2 id="dsh-cos-task-title">{copy.tasksTitle}</h2><span>{copy.taskCount(tasks.length)} · {overallProgress}%</span></div>
       <div className="dsh-cos-task-header__actions">
-        <button type="button" aria-label={collapsed ? copy.expandTasks : copy.collapseTasks} aria-expanded={!collapsed} onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? '⌃' : '⌄'}</button>
-        <button type="button" aria-label={copy.close} onClick={onClose}>×</button>
+        <button type="button" aria-label={collapsed ? copy.expandTasks : copy.collapseTasks} aria-expanded={!collapsed} onClick={() => onCollapsedChange(!collapsed)}><ChevronIcon direction={collapsed ? 'up' : 'down'} /></button>
+        <button type="button" aria-label={copy.close} onClick={onClose}><CloseIcon /></button>
       </div>
     </header>
     {!collapsed && <>

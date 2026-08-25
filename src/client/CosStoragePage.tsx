@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import type { CosStorageItem, CosStorageListResponse, CosObjectUrlDomain } from '../protocol.ts'
 import {
   CosStorageApiError,
@@ -26,7 +27,15 @@ import type { UploadCandidate } from './upload-selection.ts'
 export interface CosStoragePageProps {
   controller: CosStorageController
   onStartConversation?: (item: CosStorageItem) => Promise<void>
+  onRequestDocumentPreview?: (bucket: string) => Promise<void>
 }
+
+interface ItemMenuAnchor {
+  top: number
+  left: number
+}
+
+const ITEM_MENU_WIDTH = 168
 
 interface SelectionLayout {
   firstLeft: number
@@ -84,7 +93,7 @@ async function copyText(value: string): Promise<void> {
   if (!copied) throw new Error('无法复制链接，请检查浏览器权限。')
 }
 
-export function CosStoragePage({ controller, onStartConversation }: CosStoragePageProps): React.JSX.Element {
+export function CosStoragePage({ controller, onStartConversation, onRequestDocumentPreview }: CosStoragePageProps): React.JSX.Element {
   const copy = useMemo(getCopy, [])
   const storageCopy = useMemo(getStorageCopy, [])
   const [open, setOpen] = useState(controller.getSnapshot().open)
@@ -99,6 +108,7 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
   const [detailItem, setDetailItem] = useState<CosStorageItem>()
   const [previewItem, setPreviewItem] = useState<CosStorageItem>()
   const [menuKey, setMenuKey] = useState<string>()
+  const [menuAnchor, setMenuAnchor] = useState<ItemMenuAnchor>()
   const [itemActionKey, setItemActionKey] = useState<string>()
   const [linkItem, setLinkItem] = useState<CosStorageItem>()
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid')
@@ -127,6 +137,21 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
     const timeout = window.setTimeout(() => setNotice(undefined), 3000)
     return () => window.clearTimeout(timeout)
   }, [notice])
+
+  useEffect(() => {
+    if (menuKey === undefined) setMenuAnchor(undefined)
+  }, [menuKey])
+
+  useEffect(() => {
+    if (menuAnchor === undefined) return
+    const closeMenu = () => setMenuKey(undefined)
+    window.addEventListener('resize', closeMenu)
+    window.addEventListener('scroll', closeMenu, true)
+    return () => {
+      window.removeEventListener('resize', closeMenu)
+      window.removeEventListener('scroll', closeMenu, true)
+    }
+  }, [menuAnchor])
 
   useEffect(() => controller.subscribe(() => setOpen(controller.getSnapshot().open)), [controller])
 
@@ -402,6 +427,22 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
     })
   }
 
+  const toggleItemMenu = (item: CosStorageItem, trigger: HTMLButtonElement) => {
+    if (menuKey === item.key) {
+      setMenuKey(undefined)
+      return
+    }
+    const rect = trigger.getBoundingClientRect()
+    setMenuAnchor({
+      top: rect.bottom + 6,
+      left: Math.min(
+        Math.max(8, rect.right - ITEM_MENU_WIDTH),
+        Math.max(8, window.innerWidth - ITEM_MENU_WIDTH - 8),
+      ),
+    })
+    setMenuKey(item.key)
+  }
+
   const handleGetLink = (item: CosStorageItem) => {
     setMenuKey(undefined)
     setLinkItem(item)
@@ -457,6 +498,8 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
       setItemActionKey(undefined)
     }
   }
+
+  const menuItem = menuKey === undefined ? undefined : data?.items.find(item => item.key === menuKey)
 
   return (
     <main className="dsh-cos-storage-page" aria-label={copy.title} onClick={() => setMenuKey(undefined)}>
@@ -674,34 +717,9 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
                   aria-expanded={menuKey === item.key}
                   onClick={(event) => {
                     event.stopPropagation()
-                    setMenuKey(current => current === item.key ? undefined : item.key)
+                    toggleItemMenu(item, event.currentTarget)
                   }}
                 >⋯</button>
-                {menuKey === item.key && (
-                  <div className="dsh-cos-storage-item__menu" onClick={event => event.stopPropagation()}>
-                    {item.kind === 'file' && (
-                      <>
-                        <button type="button" disabled={itemActionKey !== undefined} onClick={() => void handleStartConversation(item)}>{storageCopy.startConversation}</button>
-                        <button type="button" disabled={itemActionKey !== undefined} onClick={() => {
-                          setPreviewItem(item)
-                          setMenuKey(undefined)
-                        }}>{storageCopy.preview}</button>
-                        <button type="button" disabled={itemActionKey !== undefined} onClick={() => void handleDownload(item)}>{storageCopy.download}</button>
-                        <button type="button" disabled={itemActionKey !== undefined} onClick={() => void handleGetLink(item)}>{storageCopy.getLink}</button>
-                      </>
-                    )}
-                    <button type="button" disabled={itemActionKey !== undefined} onClick={() => {
-                      setDetailItem(item)
-                      setMenuKey(undefined)
-                    }}>{storageCopy.details}</button>
-                    <button
-                      type="button"
-                      className="is-danger"
-                      disabled={itemActionKey !== undefined}
-                      onClick={() => void handleDelete(item)}
-                    >{itemActionKey === item.key ? storageCopy.deleting : storageCopy.delete}</button>
-                  </div>
-                )}
                 <div className="dsh-cos-storage-item__icon"><StorageIcon item={item} /></div>
                 {viewMode === 'list' ? (
                   <button
@@ -740,6 +758,39 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
         </div>
       </footer>
 
+      {menuItem !== undefined && menuAnchor !== undefined && createPortal(
+        <div
+          className="dsh-cos-storage-item__menu"
+          role="menu"
+          style={menuAnchor}
+          onClick={event => event.stopPropagation()}
+        >
+          {menuItem.kind === 'file' && (
+            <>
+              <button type="button" role="menuitem" disabled={itemActionKey !== undefined} onClick={() => void handleStartConversation(menuItem)}>{storageCopy.startConversation}</button>
+              <button type="button" role="menuitem" disabled={itemActionKey !== undefined} onClick={() => {
+                setPreviewItem(menuItem)
+                setMenuKey(undefined)
+              }}>{storageCopy.preview}</button>
+              <button type="button" role="menuitem" disabled={itemActionKey !== undefined} onClick={() => void handleDownload(menuItem)}>{storageCopy.download}</button>
+              <button type="button" role="menuitem" disabled={itemActionKey !== undefined} onClick={() => void handleGetLink(menuItem)}>{storageCopy.getLink}</button>
+            </>
+          )}
+          <button type="button" role="menuitem" disabled={itemActionKey !== undefined} onClick={() => {
+            setDetailItem(menuItem)
+            setMenuKey(undefined)
+          }}>{storageCopy.details}</button>
+          <button
+            type="button"
+            role="menuitem"
+            className="is-danger"
+            disabled={itemActionKey !== undefined}
+            onClick={() => void handleDelete(menuItem)}
+          >{itemActionKey === menuItem.key ? storageCopy.deleting : storageCopy.delete}</button>
+        </div>,
+        document.body,
+      )}
+
       {detailItem && <ObjectDetailModal item={detailItem} copy={storageCopy} onClose={() => setDetailItem(undefined)} />}
       {previewItem && (
         <PreviewModal
@@ -747,6 +798,7 @@ export function CosStoragePage({ controller, onStartConversation }: CosStoragePa
           items={data?.items.filter(item => item.kind === 'file') ?? []}
           copy={storageCopy}
           onDownload={item => void handleDownload(item)}
+          onRequestDocumentPreview={onRequestDocumentPreview === undefined ? undefined : async () => onRequestDocumentPreview(data?.bucket ?? '')}
           onSelect={setPreviewItem}
           onClose={() => setPreviewItem(undefined)}
         />
