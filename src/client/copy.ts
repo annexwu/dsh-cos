@@ -19,6 +19,14 @@ export interface Copy {
   regionDescription: string
   prefix: string
   prefixDescription: string
+  attachmentTitle: string
+  attachmentDescription: string
+  attachmentEnabled: string
+  attachmentDisabled: string
+  attachmentDirectory: string
+  attachmentDirectoryPlaceholder: string
+  attachmentLocation: string
+  attachmentRestartHint: string
   customDomain: string
   customDomainDescription: string
   required: string
@@ -60,6 +68,14 @@ const copies: Record<Language, Copy> = {
     regionDescription: '存储桶所在地域，必须与创建存储桶时选择的地域一致。',
     prefix: '目录前缀',
     prefixDescription: '将指定目录作为 COS 云存储根目录。留空表示存储桶根目录，保存时会自动补齐末尾的 /。',
+    attachmentTitle: '会话图片附件上云',
+    attachmentDescription: '自动将 DSH 会话中粘贴或上传的图片保存到当前 COS 云盘。',
+    attachmentEnabled: '开启',
+    attachmentDisabled: '关闭',
+    attachmentDirectory: '附件子目录',
+    attachmentDirectoryPlaceholder: '例如 dsh-attachments/',
+    attachmentLocation: '会话图片将存储在：',
+    attachmentRestartHint: '重启 DSH 后生效',
     customDomain: '自定义域名',
     customDomainDescription: '推荐配置自定义域名，COS 默认域名不支持文件在线预览。如需预览，请填写已绑定到当前存储桶的自定义域名。留空时使用 COS 默认域名。',
     required: '必填',
@@ -99,6 +115,14 @@ const copies: Record<Language, Copy> = {
     regionDescription: 'The region where the bucket was created. It must match the actual bucket region.',
     prefix: 'Directory prefix',
     prefixDescription: 'Use this directory as the storage root. Leave blank for the bucket root; a trailing / is added on save.',
+    attachmentTitle: 'Store conversation images in COS',
+    attachmentDescription: 'Automatically store images pasted or uploaded in DSH conversations in the current COS storage root.',
+    attachmentEnabled: 'On',
+    attachmentDisabled: 'Off',
+    attachmentDirectory: 'Attachment subdirectory',
+    attachmentDirectoryPlaceholder: 'For example, dsh-attachments/',
+    attachmentLocation: 'Conversation images will be stored in:',
+    attachmentRestartHint: 'Takes effect after restarting DSH',
     customDomain: 'Custom domain',
     customDomainDescription: 'A custom domain is recommended because COS default domains do not support online file preview. To preview files, enter a custom domain bound to this bucket. Leave blank to use the default COS domain.',
     required: 'Required',

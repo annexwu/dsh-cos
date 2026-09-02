@@ -1,5 +1,5 @@
 import { isIP } from 'node:net'
-import type { Config } from './config.ts'
+import { DEFAULT_ATTACHMENT_DIRECTORY, type Config } from './config.ts'
 
 const BUCKET_PATTERN = /^[a-z0-9][a-z0-9.-]{0,49}-[0-9]{5,20}$/
 const REGION_PATTERN = /^[a-z][a-z0-9-]{1,31}$/
@@ -86,17 +86,106 @@ export function normalizeCustomDomain(value: string | undefined): string {
   return url.origin
 }
 
+export function normalizeAttachmentDirectory(value: string | undefined): string {
+  const directory = normalizePrefix(value ?? DEFAULT_ATTACHMENT_DIRECTORY)
+  if (directory === '') throw new ConfigValidationError('附件子目录不能为空。')
+  return directory
+}
+
+export function attachmentRootPrefix(config: Pick<Config, 'prefix' | 'attachmentDirectory'>): string {
+  return `${config.prefix}${normalizeAttachmentDirectory(config.attachmentDirectory)}`
+}
+
+const MAX_ATTACHMENT_READ_ORIGINS = 8
+
+export interface AttachmentReadOrigin {
+  bucket: string
+  region: string
+  root: string
+}
+
+function sameAttachmentOrigin(left: AttachmentReadOrigin, right: AttachmentReadOrigin): boolean {
+  return left.bucket === right.bucket && left.region === right.region && left.root === right.root
+}
+
+export function normalizeAttachmentReadRoots(value: string | undefined): string {
+  const roots: string[] = []
+  for (const entry of (value ?? '').split(/\r?\n/)) {
+    if (entry.trim() === '') continue
+    const root = normalizePrefix(entry)
+    if (root !== '' && !roots.includes(root)) roots.push(root)
+  }
+  return roots.slice(0, MAX_ATTACHMENT_READ_ORIGINS).join('\n')
+}
+
+function parseAttachmentReadOrigins(value: string | undefined): AttachmentReadOrigin[] {
+  if (value?.trim() === '') return []
+  try {
+    const parsed: unknown = JSON.parse(value ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    const origins: AttachmentReadOrigin[] = []
+    for (const entry of parsed) {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+      const { bucket, region, root } = entry as Record<string, unknown>
+      if (typeof bucket !== 'string' || typeof region !== 'string' || typeof root !== 'string') continue
+      try {
+        const origin = { bucket: normalizeBucket(bucket), region: normalizeRegion(region), root: normalizePrefix(root) }
+        if (origin.root !== '' && !origins.some(item => sameAttachmentOrigin(item, origin))) origins.push(origin)
+      } catch {}
+    }
+    return origins.slice(0, MAX_ATTACHMENT_READ_ORIGINS)
+  } catch {
+    return []
+  }
+}
+
+export function attachmentReadOrigins(config: Pick<Config, 'bucket' | 'region' | 'prefix' | 'attachmentDirectory' | 'attachmentReadRoots' | 'attachmentReadOrigins'>): readonly AttachmentReadOrigin[] {
+  const current = { bucket: config.bucket, region: config.region, root: attachmentRootPrefix(config) }
+  const legacy = normalizeAttachmentReadRoots(config.attachmentReadRoots)
+    .split('\n')
+    .filter(Boolean)
+    .map(root => ({ bucket: config.bucket, region: config.region, root }))
+  const historical = [...parseAttachmentReadOrigins(config.attachmentReadOrigins), ...legacy]
+  return [current, ...historical.filter(origin => !sameAttachmentOrigin(origin, current))]
+    .filter((origin, index, origins) => origins.findIndex(item => sameAttachmentOrigin(item, origin)) === index)
+    .slice(0, MAX_ATTACHMENT_READ_ORIGINS + 1)
+}
+
+export function attachmentReadRoots(config: Pick<Config, 'bucket' | 'region' | 'prefix' | 'attachmentDirectory' | 'attachmentReadRoots' | 'attachmentReadOrigins'>): readonly string[] {
+  return attachmentReadOrigins(config).map(origin => origin.root)
+}
+
+export function withAttachmentReadRoots(previous: Config, next: Config): Config {
+  const current = { bucket: next.bucket, region: next.region, root: attachmentRootPrefix(next) }
+  const historical = attachmentReadOrigins(previous)
+    .filter(origin => !sameAttachmentOrigin(origin, current))
+    .slice(0, MAX_ATTACHMENT_READ_ORIGINS)
+  return {
+    ...next,
+    attachmentReadRoots: '',
+    attachmentReadOrigins: JSON.stringify(historical),
+  }
+}
+
 export function normalizeConfig(input: {
   bucket: string
   region: string
   prefix?: string
   customDomain?: string
+  attachmentEnabled?: boolean
+  attachmentDirectory?: string
+  attachmentReadRoots?: string
+  attachmentReadOrigins?: string
 }): Config {
   return {
     bucket: normalizeBucket(input.bucket),
     region: normalizeRegion(input.region),
     prefix: normalizePrefix(input.prefix),
     customDomain: normalizeCustomDomain(input.customDomain),
+    attachmentEnabled: input.attachmentEnabled ?? true,
+    attachmentDirectory: normalizeAttachmentDirectory(input.attachmentDirectory),
+    attachmentReadRoots: normalizeAttachmentReadRoots(input.attachmentReadRoots),
+    attachmentReadOrigins: JSON.stringify(parseAttachmentReadOrigins(input.attachmentReadOrigins)),
   }
 }
 

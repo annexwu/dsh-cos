@@ -10,6 +10,8 @@ interface FormState {
   region: string
   prefix: string
   customDomain: string
+  attachmentEnabled: boolean
+  attachmentDirectory: string
 }
 
 type Feedback = { kind: 'success' | 'error'; text: string } | undefined
@@ -21,6 +23,8 @@ const EMPTY_FORM: FormState = {
   region: '',
   prefix: '',
   customDomain: '',
+  attachmentEnabled: true,
+  attachmentDirectory: 'dsh-attachments/',
 }
 
 function toForm(config: CosStorageConfigView): FormState {
@@ -30,6 +34,8 @@ function toForm(config: CosStorageConfigView): FormState {
     region: config.region,
     prefix: config.prefix,
     customDomain: config.customDomain,
+    attachmentEnabled: config.attachmentEnabled,
+    attachmentDirectory: config.attachmentDirectory,
   }
 }
 
@@ -39,6 +45,8 @@ function requestOf(form: FormState): SaveCosStorageConfigRequest {
     region: form.region,
     prefix: form.prefix,
     customDomain: form.customDomain,
+    attachmentEnabled: form.attachmentEnabled,
+    attachmentDirectory: form.attachmentDirectory,
     ...(form.secretId.trim() === '' ? {} : { secretId: form.secretId }),
     ...(form.secretKey.trim() === '' ? {} : { secretKey: form.secretKey }),
   }
@@ -46,6 +54,13 @@ function requestOf(form: FormState): SaveCosStorageConfigRequest {
 
 function messageOf(error: unknown): string {
   return error instanceof CosStorageApiError ? error.message : '操作失败，请稍后重试。'
+}
+
+function attachmentLocation(root: string, directory: string): string {
+  const segments = [root, directory]
+    .map(value => value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+    .filter(Boolean)
+  return `/${segments.join('/')}/`
 }
 
 export interface SettingsCardProps {
@@ -77,8 +92,13 @@ export function SettingsCard({ onSaved }: SettingsCardProps = {}): React.JSX.Ele
     }
   }, [copy])
 
-  const update = (key: keyof FormState) => (event: React.ChangeEvent<HTMLInputElement>) => {
+  const update = (key: Exclude<keyof FormState, 'attachmentEnabled'>) => (event: React.ChangeEvent<HTMLInputElement>) => {
     setForm(current => ({ ...current, [key]: event.target.value }))
+    setFeedback(undefined)
+  }
+
+  const setAttachmentEnabled = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setForm(current => ({ ...current, attachmentEnabled: event.target.checked }))
     setFeedback(undefined)
   }
 
@@ -206,6 +226,25 @@ export function SettingsCard({ onSaved }: SettingsCardProps = {}): React.JSX.Ele
               />
               <small>{copy.prefixDescription}</small>
             </label>
+            <div className="dsh-cos-settings-card__field dsh-cos-settings-card__attachment-field">
+              <div className="dsh-cos-settings-card__attachment-heading">
+                <span>{copy.attachmentDirectory}</span>
+                <label className="dsh-cos-settings-card__switch" aria-label={copy.attachmentTitle}>
+                  <span className="dsh-cos-settings-card__switch-label">{copy.attachmentTitle}</span>
+                  <input type="checkbox" checked={form.attachmentEnabled} disabled={disabled} onChange={setAttachmentEnabled} />
+                  <span className="dsh-cos-settings-card__switch-track" aria-hidden="true" />
+                </label>
+              </div>
+              <input
+                aria-label={copy.attachmentDirectory}
+                value={form.attachmentDirectory}
+                placeholder={copy.attachmentDirectoryPlaceholder}
+                spellCheck={false}
+                disabled={disabled || !form.attachmentEnabled}
+                onChange={update('attachmentDirectory')}
+              />
+              <small className="dsh-cos-settings-card__attachment-location">{copy.attachmentLocation}<code>{attachmentLocation(form.prefix, form.attachmentDirectory)}</code><span>· {copy.attachmentRestartHint}</span></small>
+            </div>
             <label className="dsh-cos-settings-card__field">
               <span>{copy.customDomain}<i>{copy.optional}</i></span>
               <input

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   ConfigValidationError,
+  attachmentReadOrigins,
+  attachmentReadRoots,
+  attachmentRootPrefix,
+  normalizeAttachmentDirectory,
   normalizeBucket,
   normalizeConfig,
   buildObjectKey,
@@ -27,12 +31,44 @@ describe('COS config normalization', () => {
       region: 'ap-guangzhou',
       prefix: 'team/reports/',
       customDomain: 'https://static.example.com',
+      attachmentEnabled: true,
+      attachmentDirectory: 'dsh-attachments/',
+      attachmentReadRoots: '',
+      attachmentReadOrigins: '[]',
     })
   })
 
   it('maps blank prefixes to the bucket root', () => {
     expect(normalizePrefix('  ')).toBe('')
     expect(normalizePrefix('/')).toBe('')
+  })
+
+  it('keeps attachment storage under the configured cloud-drive root', () => {
+    expect(normalizeAttachmentDirectory(' chat-images ')).toBe('chat-images/')
+    expect(attachmentRootPrefix({ prefix: 'team/reports/', attachmentDirectory: 'chat-images/' })).toBe('team/reports/chat-images/')
+    expect(attachmentRootPrefix({ prefix: '', attachmentDirectory: 'dsh-attachments/' })).toBe('dsh-attachments/')
+    expect(() => normalizeAttachmentDirectory('../outside')).toThrow(ConfigValidationError)
+    expect(() => normalizeAttachmentDirectory('')).toThrow(ConfigValidationError)
+  })
+
+  it('retains the previous attachment root for reading after the cloud-drive path changes', () => {
+    expect(attachmentReadRoots({
+      bucket: 'example-1250000000',
+      region: 'ap-guangzhou',
+      prefix: '',
+      attachmentDirectory: 'dsh-attachments/',
+      attachmentReadRoots: 'team/project-a/dsh-attachments/',
+    })).toEqual(['dsh-attachments/', 'team/project-a/dsh-attachments/'])
+    expect(attachmentReadOrigins({
+      bucket: 'next-1250000000',
+      region: 'ap-shanghai',
+      prefix: '',
+      attachmentDirectory: 'dsh-attachments/',
+      attachmentReadOrigins: JSON.stringify([{ bucket: 'example-1250000000', region: 'ap-guangzhou', root: 'team/project-a/dsh-attachments/' }]),
+    })).toEqual([
+      { bucket: 'next-1250000000', region: 'ap-shanghai', root: 'dsh-attachments/' },
+      { bucket: 'example-1250000000', region: 'ap-guangzhou', root: 'team/project-a/dsh-attachments/' },
+    ])
   })
 
   it('rejects invalid buckets, regions, and traversal prefixes', () => {

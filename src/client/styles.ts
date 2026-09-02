@@ -1201,6 +1201,25 @@ html[data-dsh-cos-storage-active] [class*='centerCol'] > :not([data-dsh-cos-stor
   font-size: 12px;
   line-height: 1.6;
 }
+.dsh-cos-settings-card__attachment-field { gap: 10px; }
+.dsh-cos-settings-card__attachment-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dsh-cos-settings-card__attachment-heading > span { font-size: 14px; font-weight: 650; }
+.dsh-cos-settings-card__switch { position: relative; display: inline-flex; align-items: center; gap: 8px; flex: none; cursor: pointer; }
+.dsh-cos-settings-card__switch-label { color: var(--dsw-alias-label-secondary, #626a76); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.dsh-cos-settings-card__switch input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.dsh-cos-settings-card__switch-track { position: relative; display: block; width: 36px; height: 20px; border-radius: 999px; background: var(--dsw-alias-border-l2, #cbd1da); transition: background-color .16s ease; }
+.dsh-cos-settings-card__switch-track::after { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .2); content: ''; transition: transform .16s ease; }
+.dsh-cos-settings-card__switch input:checked + .dsh-cos-settings-card__switch-track { background: var(--dsw-alias-state-business-primary, #315efb); }
+.dsh-cos-settings-card__switch input:checked + .dsh-cos-settings-card__switch-track::after { transform: translateX(16px); }
+.dsh-cos-settings-card__switch input:focus-visible + .dsh-cos-settings-card__switch-track { outline: 2px solid var(--dsw-alias-state-business-primary, #315efb); outline-offset: 2px; }
+.dsh-cos-settings-card__switch input:disabled + .dsh-cos-settings-card__switch-track { cursor: not-allowed; opacity: .55; }
+.dsh-cos-settings-card__attachment-location { display: flex; flex-wrap: wrap; gap: 4px; }
+.dsh-cos-settings-card__attachment-location code { overflow-wrap: anywhere; color: var(--dsw-alias-state-business-primary, #315efb); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .dsh-cos-settings-card__feedback {
   margin-top: 14px;
   padding: 9px 11px;

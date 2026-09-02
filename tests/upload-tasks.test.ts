@@ -7,6 +7,8 @@ const config = {
   region: 'ap-guangzhou',
   prefix: 'root/',
   customDomain: '',
+  attachmentEnabled: true,
+  attachmentDirectory: 'dsh-attachments/',
 }
 
 function createManager(): UploadTaskManager {

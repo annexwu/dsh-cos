@@ -3,6 +3,8 @@ export interface CosStorageConfigView {
   region: string
   prefix: string
   customDomain: string
+  attachmentEnabled: boolean
+  attachmentDirectory: string
   secretIdConfigured: boolean
   secretKeyConfigured: boolean
   credentialsWritable: boolean
@@ -14,6 +16,8 @@ export interface SaveCosStorageConfigRequest {
   region: string
   prefix?: string
   customDomain?: string
+  attachmentEnabled?: boolean
+  attachmentDirectory?: string
   secretId?: string
   secretKey?: string
 }
@@ -23,6 +27,8 @@ export interface TestCosStorageConnectionRequest {
   region: string
   prefix?: string
   customDomain?: string
+  attachmentEnabled?: boolean
+  attachmentDirectory?: string
   secretId?: string
   secretKey?: string
 }

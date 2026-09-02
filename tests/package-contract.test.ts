@@ -17,6 +17,7 @@ type PackageManifest = {
 }
 
 const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as PackageManifest
+const bundlePatch = readFileSync(resolve(process.cwd(), 'cordis.patch.yml'), 'utf8')
 
 describe('public npm package contract', () => {
   it('links consumers to the public repository and npm registry', () => {
@@ -44,6 +45,12 @@ describe('public npm package contract', () => {
       'README.md',
     ]))
     expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')
+  })
+
+  it('replaces the local image attachment provider with dsh-cos attachment storage', () => {
+    expect(bundlePatch).toContain("id: attachment-local")
+    expect(bundlePatch).toContain("name: '@deepseek-ai/dsh-attachment-local'")
+    expect(bundlePatch).toContain('disabled: true')
   })
 
   it('builds package artifacts before GitHub or npm installation', () => {

@@ -44,7 +44,7 @@ describe('Tencent Cloud COS management catalog', () => {
 
   it('uses Electron Node mode for COS subprocesses only in desktop runtimes', () => {
     const credentials = { secretId: 'test-secret-id', secretKey: 'test-secret-key' }
-    const config = { bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: '' }
+    const config = { bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: '', attachmentEnabled: true, attachmentDirectory: 'dsh-attachments/' }
 
     const nodeEnvironment = createTencentCloudChildEnvironment(credentials, config, false)
     const electronEnvironment = createTencentCloudChildEnvironment(credentials, config, true)
@@ -85,7 +85,7 @@ describe('Tencent Cloud COS management catalog', () => {
   })
 
   it('does not pass configured or explicit bucket scope to account-wide bucket discovery', () => {
-    const config = { bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: '' }
+    const config = { bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: '', attachmentEnabled: true, attachmentDirectory: 'dsh-attachments/' }
 
     expect(applyTencentCloudManagementDefaults('list-buckets', {}, config)).toEqual({})
     expect(applyTencentCloudManagementDefaults('list-buckets', { bucket: 'other-1250000000', region: 'ap-shanghai', appid: '1250000000', limit: '100' }, config)).toEqual({ limit: '100' })
@@ -136,7 +136,7 @@ describe('Tencent Cloud COS management catalog', () => {
       },
     } as unknown as Context
     registerTencentCloudManagementTools(ctx, {
-      getConfig: () => ({ bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: 'https://storage.example.com' }),
+      getConfig: () => ({ bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: 'team/storage/', customDomain: 'https://storage.example.com', attachmentEnabled: true, attachmentDirectory: 'dsh-attachments/' }),
       getCredentials: async () => ({ secretId: 'secret-id-must-not-leak', secretKey: 'secret-key-must-not-leak' }),
     })
 

@@ -1,3 +1,9 @@
+# dsh-cos owns the attachment seam so it can keep legacy local images readable
+# while storing new conversation images in the configured COS attachment directory.
+- id: attachment-local
+  name: '@deepseek-ai/dsh-attachment-local'
+  disabled: true
+
 # Insert the COS cloud storage plugin into the DSH web profile.
 - insert:
     - id: ui-dsh-cos

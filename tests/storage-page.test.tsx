@@ -223,7 +223,7 @@ describe('COS storage page', () => {
         return Promise.resolve(response({
           ok: true,
           config: {
-            bucket: 'example-1250000000', region: 'ap-shanghai', prefix: '', customDomain: '',
+            bucket: 'example-1250000000', region: 'ap-shanghai', prefix: '', customDomain: '', attachmentEnabled: true, attachmentDirectory: 'dsh-attachments/',
             secretIdConfigured: true, secretKeyConfigured: true, credentialsWritable: true,
           },
         }))
@@ -232,7 +232,7 @@ describe('COS storage page', () => {
         return Promise.resolve(response({
           ok: true,
           config: {
-            bucket: '', region: '', prefix: '', customDomain: '',
+            bucket: '', region: '', prefix: '', customDomain: '', attachmentEnabled: true, attachmentDirectory: 'dsh-attachments/',
             secretIdConfigured: false, secretKeyConfigured: false, credentialsWritable: true,
           },
         }))

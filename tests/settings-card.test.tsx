@@ -8,6 +8,8 @@ const configured = {
   region: 'ap-guangzhou',
   prefix: 'storage/',
   customDomain: '',
+  attachmentEnabled: true,
+  attachmentDirectory: 'dsh-attachments/',
   secretIdConfigured: true,
   secretKeyConfigured: true,
   credentialsWritable: true,
@@ -71,7 +73,11 @@ describe('SettingsCard', () => {
     expect(inputWithValue('example-1250000000')).toBeDefined()
     expect(inputWithValue('ap-guangzhou')).toBeDefined()
     expect(inputWithValue('storage/')).toBeDefined()
-    expect(container.querySelectorAll('.dsh-cos-settings-card__field')).toHaveLength(6)
+    expect(inputWithValue('dsh-attachments/')).toBeDefined()
+    expect(container.querySelectorAll('.dsh-cos-settings-card__field')).toHaveLength(7)
+    expect(container.querySelector<HTMLInputElement>('.dsh-cos-settings-card__switch input')?.checked).toBe(true)
+    expect(container.textContent).toContain('会话图片附件上云')
+    expect(container.textContent).toContain('/storage/dsh-attachments/')
     expect(container.textContent).toContain('名称格式为 BucketName-APPID')
     expect(container.textContent).toContain('留空表示存储桶根目录')
     expect(container.textContent).toContain('COS 默认域名不支持文件在线预览')
@@ -120,7 +126,24 @@ describe('SettingsCard', () => {
       region: 'ap-guangzhou',
       prefix: 'next',
       customDomain: '',
+      attachmentEnabled: true,
+      attachmentDirectory: 'dsh-attachments/',
     })
+  })
+
+  it('updates the resolved cloud location as the attachment subdirectory changes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ok: true, config: configured })))
+    await renderCard()
+
+    const directory = inputWithValue('dsh-attachments/')!
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      setter?.call(directory, 'chat-images')
+      directory.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    expect(container.textContent).toContain('/storage/chat-images/')
+    expect(container.textContent).toContain('重启 DSH 后生效')
   })
 
   it('shows Host validation failures without losing form values', async () => {

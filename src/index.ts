@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
+import type {} from '@deepseek-ai/dsh-attachment'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
@@ -14,6 +15,7 @@ import {
   type Config,
 } from './config.ts'
 import { registerAttachmentRoutes } from './attachment-routes.ts'
+import { CosAttachmentStore } from './cos-attachment-store.ts'
 import { registerHostRoutes } from './host.ts'
 import { registerTencentCloudCosSkill } from './tencentcloud-skill.ts'
 import { registerTencentCloudManagementTools } from './tencentcloud-tools.ts'
@@ -32,6 +34,18 @@ export function apply(ctx: Context, entry: Config = DEFAULT_CONFIG): void {
       getConfig = source
     },
     onChange() {},
+  })
+
+  ctx.plugin(CosAttachmentStore, {
+    getConfig: () => ({ ...DEFAULT_CONFIG, ...getConfig() }),
+    getCredentials: async () => {
+      const secretId = await ctx.credentials.resolve(SECRET_ID_REF as CredentialRef)
+      const secretKey = await ctx.credentials.resolve(SECRET_KEY_REF as CredentialRef)
+      if (secretId?.value === undefined || secretKey?.value === undefined) {
+        throw new Error('Configure COS credentials before storing conversation images in COS.')
+      }
+      return { secretId: secretId.value, secretKey: secretKey.value }
+    },
   })
 
   ctx.inject(['credentials', 'settings', 'webServer', 'sessions', 'skills', 'tools'], (hostCtx) => {

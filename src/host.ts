@@ -6,6 +6,7 @@ import { SECRET_ID_REF, SECRET_KEY_REF } from './config.ts'
 import {
   normalizeConfig,
   normalizeStoragePath,
+  withAttachmentReadRoots,
   normalizeListMarker,
   normalizeSecret,
 } from './cos-config.ts'
@@ -51,6 +52,13 @@ function stringField(value: Record<string, unknown>, key: string, required: bool
   return field
 }
 
+function booleanField(value: Record<string, unknown>, key: string): boolean | undefined {
+  const field = value[key]
+  if (field === undefined) return undefined
+  if (typeof field !== 'boolean') throw new HttpError(400, 'invalid-request', `${key} 必须是布尔值。`)
+  return field
+}
+
 function parseSaveRequest(value: unknown): SaveCosStorageConfigRequest {
   if (!isRecord(value)) throw new HttpError(400, 'invalid-request', '请求内容格式不正确。')
   return {
@@ -58,6 +66,8 @@ function parseSaveRequest(value: unknown): SaveCosStorageConfigRequest {
     region: stringField(value, 'region', true)!,
     prefix: stringField(value, 'prefix', false),
     customDomain: stringField(value, 'customDomain', false),
+    attachmentEnabled: booleanField(value, 'attachmentEnabled'),
+    attachmentDirectory: stringField(value, 'attachmentDirectory', false),
     secretId: stringField(value, 'secretId', false),
     secretKey: stringField(value, 'secretKey', false),
   }
@@ -86,7 +96,12 @@ function requireConfiguredConfig(source: ConfigSource): Config {
 function configView(config: Config, secretId: CredentialInfo, secretKey: CredentialInfo): CosStorageConfigView {
   const sameSource = secretId.source !== undefined && secretId.source === secretKey.source
   return {
-    ...config,
+    bucket: config.bucket,
+    region: config.region,
+    prefix: config.prefix,
+    customDomain: config.customDomain,
+    attachmentEnabled: config.attachmentEnabled,
+    attachmentDirectory: config.attachmentDirectory,
     secretIdConfigured: secretId.configured,
     secretKeyConfigured: secretKey.configured,
     credentialsWritable: secretId.writable && secretKey.writable,
@@ -121,7 +136,7 @@ async function resolveCredentials(
 }
 
 async function saveConfig(ctx: HostDependencies, source: ConfigSource, input: SaveCosStorageConfigRequest): Promise<void> {
-  const config = normalizeConfig(input)
+  const config = withAttachmentReadRoots(source.get(), normalizeConfig(input))
   await resolveCredentials(ctx, input)
   const secretId = normalizeSecret(input.secretId, 'SecretId')
   const secretKey = normalizeSecret(input.secretKey, 'SecretKey')
