@@ -27,9 +27,16 @@ type InputActions = {
   setDraft(text: string): void
 }
 
+type InputReference = {
+  source: string
+  ref: string
+  label: string
+  clipboardText: string
+}
+
 type ActionContext = {
-  get(name: string): { input?: { for(actx: ActionContext): { state: { getSnapshot(): InputSnapshot } } } } | undefined
-  emit(event: string, payload: Record<string, unknown>): void
+  get(name: string): { input?: { for(actx: ActionContext): { state: { getSnapshot(): InputSnapshot }; insertReference(reference: InputReference, span: { start: number; end: number; draftRev: number }): boolean } } } | undefined
+  bail(scope: ActionContext, event: string, payload: Record<string, unknown>): unknown
 }
 
 export type InputServiceContext = {
@@ -44,7 +51,7 @@ export type AttachmentSlotProps = {
 
 type AttachmentButtonProps = {
   sessionId: string
-  attach: (attachment: SessionAttachment) => Promise<void>
+  attach: (attachment: SessionAttachment, firstInBatch?: boolean) => Promise<void>
 }
 
 let lastError: string | undefined
@@ -69,27 +76,31 @@ function setError(value: string | undefined): void {
   notify()
 }
 
-async function insertReference(actx: ActionContext, attachment: SessionAttachment): Promise<boolean> {
+async function insertReference(
+  actx: ActionContext,
+  attachment: SessionAttachment,
+  detectEnd?: number,
+): Promise<{ nextDetectEnd: number }> {
   const conversation = actx.get('conversation')
   const input = conversation?.input?.for(actx)
-  if (input === undefined) throw new Error('conversation input service unavailable')
+  if (input === undefined) throw new Error('会话输入框暂不可用，请稍后重试。')
   const state = input.state.getSnapshot()
   const referenceIndex = state.occurrences.filter(item => item.source === SOURCE_NAME).length + 1
   const ref = encodeSessionAttachmentReference(attachment)
-  actx.emit('slash/input-insert-reference', {
-    reference: {
-      source: SOURCE_NAME,
-      ref,
-      label: getAttachmentCopy().inputReference(referenceIndex),
-      clipboardText: attachment.path,
-    },
-    span: {
-      start: state.draft.length,
-      end: state.draft.length,
-      draftRev: state.draftRev,
-    },
-  })
-  return input.state.getSnapshot().occurrences.some(item => item.source === SOURCE_NAME && item.ref === ref)
+  const existingOwnReferenceLength = state.occurrences
+    .filter(item => item.source === SOURCE_NAME)
+    .reduce((total, item) => total + sessionAttachmentPath(item.ref).length, 0)
+  const end = detectEnd ?? state.draft.length - existingOwnReferenceLength
+  const span = { start: end, end, draftRev: state.draftRev }
+  const inserted = input.insertReference({
+    source: SOURCE_NAME,
+    ref,
+    label: getAttachmentCopy().inputReference(referenceIndex),
+    clipboardText: attachment.path,
+  }, span)
+  if (inserted) return { nextDetectEnd: end + 1 }
+
+  throw new Error(getAttachmentCopy().attachmentError)
 }
 
 function AttachmentMenu({ sessionId, attach }: AttachmentButtonProps): React.JSX.Element {
@@ -97,9 +108,14 @@ function AttachmentMenu({ sessionId, attach }: AttachmentButtonProps): React.JSX
   const [pickerOpen, setPickerOpen] = useState(false)
 
   const onCosPick = async (items: CosStorageItem[]) => {
-    for (const item of items) {
-      const response = await importCosAttachment({ sessionId, key: item.key, kind: item.kind })
-      await attach(response.attachment)
+    for (const [index, item] of items.entries()) {
+      try {
+        const response = await importCosAttachment({ sessionId, key: item.key, kind: item.kind })
+        await attach(response.attachment, index === 0)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : getAttachmentCopy().attachmentError
+        throw new Error(`添加“${item.name}”失败：${message}`)
+      }
     }
   }
 
@@ -121,10 +137,12 @@ export function ConversationAttachmentButton(props: AttachmentButtonProps): Reac
   return <AttachmentMenu {...props} />
 }
 
-export function createAttachmentAction(ctx: InputServiceContext, sessionId: string): (attachment: SessionAttachment) => Promise<void> {
-  return async (attachment) => {
-    const inserted = await insertReference(ctx.sessions.scope(sessionId), attachment)
-    if (!inserted) throw new Error(getAttachmentCopy().attachmentError)
+export function createAttachmentAction(ctx: InputServiceContext, sessionId: string): (attachment: SessionAttachment, firstInBatch?: boolean) => Promise<void> {
+  let nextDetectEnd: number | undefined
+  return async (attachment, firstInBatch = false) => {
+    if (firstInBatch) nextDetectEnd = undefined
+    const result = await insertReference(ctx.sessions.scope(sessionId), attachment, nextDetectEnd)
+    nextDetectEnd = result.nextDetectEnd
     setError(undefined)
   }
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { DEFAULT_CONFIG } from '../src/config.ts'
-import { cosAttachmentObjectKey, cosAttachmentObjectKeys } from '../src/cos-attachment-store.ts'
+import { CosAttachmentStore, cosAttachmentObjectKey, cosAttachmentObjectKeys } from '../src/cos-attachment-store.ts'
 
 const ref = {
   attachmentId: `sha256:${'a'.repeat(64)}`,
@@ -27,6 +28,14 @@ describe('COS conversation image attachment layout', () => {
   it('keeps attachment objects under the visible attachment directory at the bucket root', () => {
     const config = { ...DEFAULT_CONFIG, bucket: 'example-1250000000', region: 'ap-guangzhou' }
     expect(cosAttachmentObjectKey(config, ref)).toBe(`dsh-attachments/v1/objects/aa/${'a'.repeat(64)}.png`)
+  })
+
+  it('declares no local host path for COS-backed images', () => {
+    const store = new CosAttachmentStore(new Context(), {
+      getConfig: () => ({ ...DEFAULT_CONFIG, bucket: 'example-1250000000', region: 'ap-guangzhou' }),
+      getCredentials: async () => ({ secretId: 'secret-id', secretKey: 'secret-key' }),
+    })
+    expect(store.imageHostPath(ref)).toBeUndefined()
   })
 
   it('keeps prior attachment directories readable after the cloud-drive root changes', () => {

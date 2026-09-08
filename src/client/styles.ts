@@ -88,19 +88,13 @@ const CSS = `
 [class*='centerCol'] {
   position: relative;
 }
-[data-dsh-cos-storage-view] {
+.dsh-cos-storage-overlay {
   position: absolute;
   inset: 0;
   z-index: 70;
-  display: none;
+  overflow: hidden;
+  pointer-events: auto;
   background: var(--dsw-alias-bg-base, #fff);
-}
-html[data-dsh-cos-storage-active] [data-dsh-cos-storage-view] {
-  display: block;
-}
-html[data-dsh-cos-storage-active] [data-pane='conversation'] > :not([data-dsh-cos-storage-view]),
-html[data-dsh-cos-storage-active] [class*='centerCol'] > :not([data-dsh-cos-storage-view]) {
-  display: none !important;
 }
 .dsh-cos-storage-page {
   display: flex;

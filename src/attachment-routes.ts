@@ -9,7 +9,7 @@ import {
   listCosObjects,
   type CosCredentials,
 } from './cos-client.ts'
-import { HttpError, assertSafeRequest, readJsonBody, sendError, sendJson } from './http.ts'
+import { HttpError, assertSafeRequest, readJsonBody, rejectUnauthenticatedRequest, sendError, sendJson } from './http.ts'
 import type {
   CreateLocalAttachmentResponse,
   DeleteSessionAttachmentRequest,
@@ -138,7 +138,14 @@ function baseName(key: string): string {
 export function registerAttachmentRoutes(ctx: AttachmentDependencies, services: AttachmentServices): () => void {
   const disposers: Array<() => void> = []
   const register = (path: string, handler: (request: IncomingMessage, response: ServerResponse) => Promise<void>) => {
-    disposers.push(ctx.webServer.register({ kind: 'exact', path, handler }))
+    disposers.push(ctx.webServer.register({
+      kind: 'exact',
+      path,
+      handler: async (request, response) => {
+        if (rejectUnauthenticatedRequest(ctx.connection, request, response)) return
+        await handler(request, response)
+      },
+    }))
   }
 
   try {

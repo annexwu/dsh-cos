@@ -14,27 +14,40 @@ type RegisteredSource = {
 
 function harness() {
   const occurrences = new Map<string, Occurrence[]>()
+  const attachmentActions = new Map<string, (attachment: SessionAttachment, firstInBatch?: boolean) => Promise<void>>()
+  const drafts = new Map<string, string>()
+  const detectEnds = new Map<string, number>()
   let source: RegisteredSource | undefined
+  let insertCalls = 0
   const cleanups: Array<() => void> = []
   const scope = (sessionId: string) => {
     const sessionOccurrences = occurrences.get(sessionId) ?? []
     occurrences.set(sessionId, sessionOccurrences)
+    drafts.set(sessionId, drafts.get(sessionId) ?? '请分析附件')
+    detectEnds.set(sessionId, detectEnds.get(sessionId) ?? '请分析附件'.length)
     return {
       get: () => ({
         input: {
-          for: () => ({ state: { getSnapshot: () => ({ draft: '请分析附件', draftRev: 1, occurrences: sessionOccurrences }) } }),
+          for: () => ({
+            state: { getSnapshot: () => ({ draft: drafts.get(sessionId)!, draftRev: 1, occurrences: sessionOccurrences }) },
+            insertReference: (reference: { source: string; ref: string; label: string; clipboardText: string }, span: { start: number; end: number }) => {
+              if (span.start !== detectEnds.get(sessionId) || span.end !== detectEnds.get(sessionId)) return false
+              insertCalls += 1
+              sessionOccurrences.push({
+                source: reference.source,
+                ref: reference.ref,
+                label: reference.label,
+                offset: span.start,
+                occurrenceId: `${sessionId}-${sessionOccurrences.length + 1}`,
+              })
+              drafts.set(sessionId, `${drafts.get(sessionId)!}${reference.clipboardText} `)
+              detectEnds.set(sessionId, detectEnds.get(sessionId)! + 1)
+              return true
+            },
+          }),
         },
       }),
-      emit: (event: string, payload: { reference: { source: string; ref: string; label: string }; span: { start: number } }) => {
-        if (event !== 'slash/input-insert-reference') return
-        sessionOccurrences.push({
-          source: payload.reference.source,
-          ref: payload.reference.ref,
-          label: payload.reference.label,
-          offset: payload.span.start,
-          occurrenceId: `${sessionId}-${sessionOccurrences.length + 1}`,
-        })
-      },
+      bail: () => true,
     }
   }
   const ctx = {
@@ -53,8 +66,16 @@ function harness() {
   }
   return {
     ctx,
-    attach: (sessionId: string, attachment: SessionAttachment) => createAttachmentAction(ctx, sessionId)(attachment),
+    attach: (sessionId: string, attachment: SessionAttachment, firstInBatch = false) => {
+      let action = attachmentActions.get(sessionId)
+      if (action === undefined) {
+        action = createAttachmentAction(ctx, sessionId)
+        attachmentActions.set(sessionId, action)
+      }
+      return action(attachment, firstInBatch)
+    },
     occurrences: (sessionId: string) => occurrences.get(sessionId) ?? [],
+    insertCalls: () => insertCalls,
     source: () => source,
     dispose: () => cleanups.splice(0).reverse().forEach(cleanup => cleanup()),
   }
@@ -86,6 +107,7 @@ describe('COS conversation attachment input reference', () => {
       const source = test.source()
       const refs = test.occurrences('session-1').map(item => item.ref)
       expect(source?.name).toBe('dsh-cos-attachment')
+      expect(test.insertCalls()).toBe(2)
       expect(refs).toHaveLength(2)
       expect(source!.codec.clipboardText(refs[0])).toBe(first.path)
 

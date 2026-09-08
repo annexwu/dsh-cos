@@ -1,5 +1,11 @@
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { CosStorageItem } from '../protocol.ts'
 import { importCosAttachment } from './api.ts'
 import {
@@ -11,14 +17,14 @@ import {
 import { serializeSessionAttachmentReference, sessionAttachmentPath } from './attachment-reference.ts'
 import { SettingsCard } from './SettingsCard.tsx'
 import { CosStorageController } from './controller.ts'
-import { mountPanel } from './panel.tsx'
-import { mountSidebarEntry } from './sidebar.ts'
+import { mountStoragePanel } from './panel.tsx'
+import { mountStorageSidebarEntry } from './sidebar.tsx'
 import { installStyles } from './styles.ts'
 
 export const inject = ['slots', 'sessions', 'inputTriggers']
 let applied = false
 
-type AttachmentClientContext = ClientContext & InputServiceContext & {
+type AttachmentClientContext = Context & InputServiceContext & {
   inputTriggers: {
     registerSource(source: Record<string, unknown>): void
   }
@@ -72,50 +78,45 @@ export function apply(ctx: AttachmentClientContext): void {
     order: 120,
   }, ConversationAttachmentDock))
 
-  ctx.effect(() => {
-    const controller = new CosStorageController()
-    const disposers: Array<() => void> = []
-    try {
-      const sessionService = ctx.sessions as unknown as {
-        list: { getSnapshot(): { current: string | undefined; ids: string[] } }
-        open(sessionId: string): void
-      }
-      const currentSessionId = (): string => {
-        const sessionList = sessionService.list.getSnapshot()
-        const sessionId = sessionList.current ?? sessionList.ids.at(-1)
-        if (sessionId === undefined) throw new Error('当前没有可用的会话，请先打开或新建一个会话。')
-        return sessionId
-      }
-      const startConversation = async (item: CosStorageItem): Promise<void> => {
-        const sessionId = currentSessionId()
-        const response = await importCosAttachment({ sessionId, key: item.key, kind: item.kind })
-        sessionService.open(sessionId)
-        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-        await createAttachmentAction(ctx, sessionId)(response.attachment)
-        controller.close()
-      }
-      const requestDocumentPreview = async (bucket: string): Promise<void> => {
-        const sessionId = currentSessionId()
-        sessionService.open(sessionId)
-        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-        const actx = ctx.sessions.scope(sessionId)
-        const input = actx.get('conversation')?.input?.for(actx)
-        if (input === undefined) throw new Error('会话输入框暂不可用，请稍后重试。')
-        const state = input.state.getSnapshot()
-        actx.emit('slash/input-insert-text', {
-          text: `请协助为 COS 存储桶 ${bucket} 开通文档预览服务，并说明开通步骤。`,
-          span: { start: state.draft.length, end: state.draft.length, draftRev: state.draftRev },
-        })
-        controller.close()
-      }
-      disposers.push(mountSidebarEntry(controller))
-      disposers.push(mountPanel(controller, startConversation, requestDocumentPreview))
-    } catch (error) {
-      console.error('[dsh-cos] UI mount failed', error)
-    }
-    return () => {
-      controller.close()
-      for (const dispose of disposers.reverse()) dispose()
-    }
-  }, 'dsh-cos: UI surfaces')
+  const controller = new CosStorageController()
+  const sessionService = ctx.sessions as unknown as {
+    list: { getSnapshot(): { current: string | undefined; ids: string[] } }
+    open(sessionId: string): void
+  }
+  const currentSessionId = (): string => {
+    const sessionList = sessionService.list.getSnapshot()
+    const sessionId = sessionList.current ?? sessionList.ids.at(-1)
+    if (sessionId === undefined) throw new Error('当前没有可用的会话，请先打开或新建一个会话。')
+    return sessionId
+  }
+  const startConversation = async (item: CosStorageItem): Promise<void> => {
+    const sessionId = currentSessionId()
+    const response = await importCosAttachment({ sessionId, key: item.key, kind: item.kind })
+    sessionService.open(sessionId)
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    await createAttachmentAction(ctx, sessionId)(response.attachment)
+    controller.close()
+  }
+  const requestDocumentPreview = async (bucket: string): Promise<void> => {
+    const sessionId = currentSessionId()
+    sessionService.open(sessionId)
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    const actx = ctx.sessions.scope(sessionId)
+    if (actx === undefined) throw new Error('会话输入框暂不可用，请稍后重试。')
+    const input = actx.get('conversation')?.input?.for(actx)
+    if (input === undefined) throw new Error('会话输入框暂不可用，请稍后重试。')
+    const state = input.state.getSnapshot()
+    actx.bail(actx, 'slash/input-insert-text', {
+      text: `请协助为 COS 存储桶 ${bucket} 开通文档预览服务，并说明开通步骤。`,
+      span: { start: state.draft.length, end: state.draft.length, draftRev: state.draftRev },
+    })
+    controller.close()
+  }
+  ctx.effect(() => mountStorageSidebarEntry(controller), 'dsh-cos: workspace storage entry')
+
+  ctx.effect(
+    () => mountStoragePanel(controller, startConversation, requestDocumentPreview),
+    'dsh-cos: conversation storage panel',
+  )
+  ctx.effect(() => () => controller.close(), 'dsh-cos: storage UI state')
 }

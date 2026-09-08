@@ -1,6 +1,6 @@
-import type { IncomingMessage } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it } from 'vitest'
-import { HttpError, assertSafeRequest, isLoopbackRequest } from '../src/http.ts'
+import { HttpError, assertSafeRequest, isLoopbackRequest, rejectUnauthenticatedRequest } from '../src/http.ts'
 
 function request(options: {
   method?: string
@@ -38,6 +38,17 @@ describe('Host request boundary', () => {
     const value = request({ remoteAddress: '192.168.1.20' })
     expect(isLoopbackRequest(value)).toBe(false)
     expect(() => assertSafeRequest(value, 'GET')).toThrow(HttpError)
+  })
+
+  it('applies the DSH Connection authentication gate before custom route handling', () => {
+    const response = {
+      statusCode: 0,
+      setHeader: () => undefined,
+      end: () => undefined,
+    } as unknown as ServerResponse
+    expect(rejectUnauthenticatedRequest({ requestRejection: () => 401 }, request(), response)).toBe(true)
+    expect(response.statusCode).toBe(401)
+    expect(rejectUnauthenticatedRequest({ requestRejection: () => undefined }, request(), response)).toBe(false)
   })
 
   it('rejects cross-origin browser requests', () => {

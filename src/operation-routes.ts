@@ -24,7 +24,7 @@ import {
   type CosCredentials,
   type UploadStreamControl,
 } from './cos-client.ts'
-import { HttpError, assertSafeRequest, readJsonBody, sendError, sendJson } from './http.ts'
+import { HttpError, assertSafeRequest, readJsonBody, rejectUnauthenticatedRequest, sendError, sendJson } from './http.ts'
 import type {
   CosObjectActionRequest,
   CosObjectPreviewRequest,
@@ -208,7 +208,14 @@ export function registerOperationRoutes(
 ): () => void {
   const disposers: Array<() => void> = []
   const register = (path: string, handler: (request: IncomingMessage, response: ServerResponse) => Promise<void>) => {
-    disposers.push(ctx.webServer.register({ kind: 'exact', path, handler }))
+    disposers.push(ctx.webServer.register({
+      kind: 'exact',
+      path,
+      handler: async (request, response) => {
+        if (rejectUnauthenticatedRequest(ctx.connection, request, response)) return
+        await handler(request, response)
+      },
+    }))
   }
 
   try {

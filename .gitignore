@@ -19,6 +19,7 @@ coverage/
 # Local DSH and temporary state
 .dsh/
 .dsh-cos/
+.playwright-cli/
 .tmp-*
 
 # Publish the fixed Tencent Cloud CLI runtime dependencies.

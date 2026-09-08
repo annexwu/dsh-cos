@@ -1,11 +1,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-tools'
-import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-settings'
 import {
   Config as ConfigSchema,
   DEFAULT_CONFIG,
@@ -22,18 +23,18 @@ import { registerTencentCloudManagementTools } from './tencentcloud-tools.ts'
 
 export { ConfigSchema as Config }
 
-export const inject = ['credentials', 'settings', 'webServer', 'sessions', 'skills', 'tools']
-
-const NAMESPACE = settingsNamespace(SETTINGS_NAMESPACE)
+export const inject = ['connection', 'credentials', 'settings', 'webServer', 'sessions', 'skills', 'tools']
 
 export function apply(ctx: Context, entry: Config = DEFAULT_CONFIG): void {
   let getConfig = (): Config => ({ ...DEFAULT_CONFIG, ...entry })
 
-  installSettingsSection(ctx, NAMESPACE, ConfigSchema, getConfig(), {
-    setSource(source) {
-      getConfig = source
-    },
-    onChange() {},
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, ConfigSchema, getConfig(), {
+      setSource(source) {
+        getConfig = source
+      },
+      onChange() {},
+    })
   })
 
   ctx.plugin(CosAttachmentStore, {
@@ -48,10 +49,10 @@ export function apply(ctx: Context, entry: Config = DEFAULT_CONFIG): void {
     },
   })
 
-  ctx.inject(['credentials', 'settings', 'webServer', 'sessions', 'skills', 'tools'], (hostCtx) => {
+  ctx.inject(['connection', 'credentials', 'settings', 'webServer', 'sessions', 'skills', 'tools'], (hostCtx) => {
     const services = {
       get: () => ({ ...DEFAULT_CONFIG, ...getConfig() }),
-      replace: (config: Config) => hostCtx.settings.replace(NAMESPACE, config),
+      replace: async (config: Config) => { await hostCtx.settings.replace(SETTINGS_NAMESPACE, config) },
     }
     const getCredentials = async () => {
       const secretId = await hostCtx.credentials.resolve(SECRET_ID_REF as CredentialRef)

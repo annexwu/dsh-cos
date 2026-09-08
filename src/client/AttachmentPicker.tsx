@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { CosStorageItem, ListCosAttachmentResponse } from '../protocol.ts'
 import { CosStorageApiError, createFolder, createUploadTask, listCosAttachmentObjects, uploadTaskContent } from './api.ts'
 import type { AttachmentCopy } from './attachment-copy.ts'
@@ -13,7 +14,7 @@ interface AttachmentPickerProps {
 }
 
 function errorMessage(error: unknown, copy: AttachmentCopy): string {
-  return error instanceof CosStorageApiError ? error.message : copy.cosAttachmentFailed
+  return error instanceof Error && error.message !== '' ? error.message : copy.cosAttachmentFailed
 }
 
 export function AttachmentPicker({ sessionId, copy, onPick, onClose }: AttachmentPickerProps): React.JSX.Element {
@@ -155,7 +156,7 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
     }
   }
 
-  return (
+  return createPortal(
     <div className="dsh-cos-attachment-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget && !busy) onClose()
     }}>
@@ -223,6 +224,7 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
           <div><button type="button" disabled={busy} onClick={onClose}>{copy.cancel}</button><button type="button" className="is-primary" disabled={selected.length === 0 || busy} onClick={() => void attach()}>{attaching ? copy.attaching : copy.attach}</button></div>
         </footer>
       </section>
-    </div>
+    </div>,
+    document.body,
   )
 }

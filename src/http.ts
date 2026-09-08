@@ -16,6 +16,21 @@ export class HttpError extends Error {
   }
 }
 
+export interface ConnectionRequestGuard {
+  requestRejection(request: IncomingMessage): 401 | 403 | undefined
+}
+
+export function rejectUnauthenticatedRequest(
+  connection: ConnectionRequestGuard,
+  request: IncomingMessage,
+  response: ServerResponse,
+): boolean {
+  const status = connection.requestRejection(request)
+  if (status === undefined) return false
+  sendError(response, new HttpError(status, status === 401 ? 'unauthorized' : 'forbidden', status === 401 ? '请先通过 DSH 页面完成身份验证。' : '请求来源不受信任。'))
+  return true
+}
+
 function normalizeHostname(hostname: string): string {
   return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
 }

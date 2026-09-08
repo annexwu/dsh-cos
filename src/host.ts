@@ -11,7 +11,7 @@ import {
   normalizeSecret,
 } from './cos-config.ts'
 import { describeCosError, listCosObjects, testCosConnection } from './cos-client.ts'
-import { HttpError, assertSafeRequest, readJsonBody, sendError, sendJson } from './http.ts'
+import { HttpError, assertSafeRequest, readJsonBody, rejectUnauthenticatedRequest, sendError, sendJson } from './http.ts'
 import { registerLocalUploadRoutes } from './local-upload-routes.ts'
 import { registerOperationRoutes } from './operation-routes.ts'
 import { UploadTaskManager } from './upload-tasks.ts'
@@ -178,6 +178,7 @@ export function registerHostRoutes(ctx: HostDependencies, source: ConfigSource):
       kind: 'exact',
       path: API_CONFIG,
       handler: async (request, response) => {
+        if (rejectUnauthenticatedRequest(ctx.connection, request, response)) return
         try {
           const method = (request.method ?? 'GET').toUpperCase()
           if (method === 'GET') {
@@ -198,6 +199,7 @@ export function registerHostRoutes(ctx: HostDependencies, source: ConfigSource):
       kind: 'exact',
       path: API_TEST_CONNECTION,
       handler: async (request, response) => {
+        if (rejectUnauthenticatedRequest(ctx.connection, request, response)) return
         try {
           assertSafeRequest(request, 'POST')
           const input = parseTestRequest(await readJsonBody(request))
@@ -220,6 +222,7 @@ export function registerHostRoutes(ctx: HostDependencies, source: ConfigSource):
       kind: 'exact',
       path: API_LIST_OBJECTS,
       handler: async (request, response) => {
+        if (rejectUnauthenticatedRequest(ctx.connection, request, response)) return
         try {
           assertSafeRequest(request, 'POST')
           const input = parseListRequest(await readJsonBody(request))

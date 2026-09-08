@@ -18,6 +18,7 @@ import {
   DEFAULT_MAX_MESSAGE_IMAGE_BYTES,
   DEFAULT_NORMALIZED_IMAGE_MAX_BYTES,
   DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
+  DEFAULT_NORMALIZED_IMAGE_MAX_PIXELS,
   commitPreparedImageFile,
   prepareImageFile,
   readImageFile,
@@ -90,6 +91,7 @@ function sourceLimits(): ImageAttachmentLimits {
 
 function normalizationPolicy(): NormalizationPolicy {
   return Object.freeze({
+    maxPixels: DEFAULT_NORMALIZED_IMAGE_MAX_PIXELS,
     maxDimension: DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION,
     maxBytes: DEFAULT_NORMALIZED_IMAGE_MAX_BYTES,
   })
@@ -158,6 +160,11 @@ export class CosAttachmentStore extends AttachmentStore {
 
   async saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef> {
     return await this.savePrepared(await prepareImageFile(input, this.imageLimits, this.normalizationPolicy))
+  }
+
+  override imageHostPath(ref: ImageAttachmentRef): string | undefined {
+    attachmentHash(ref)
+    return undefined
   }
 
   async readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> {
