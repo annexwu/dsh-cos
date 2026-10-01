@@ -1,6 +1,8 @@
+import type { Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 
-export const SETTINGS_NAMESPACE = 'dsh-cos'
+export const SETTINGS_NAMESPACE = 'ui-dsh-cos'
+export const LEGACY_SETTINGS_NAMESPACE = 'dsh-cos'
 export const SECRET_ID_REF = 'DSH_COS_SECRET_ID'
 export const SECRET_KEY_REF = 'DSH_COS_SECRET_KEY'
 
@@ -19,16 +21,40 @@ export interface Config {
   attachmentReadOrigins?: string
 }
 
-export const Config: z<Config> = z.object({
-  bucket: z.string().default(''),
-  region: z.string().default(''),
-  prefix: z.string().default(''),
-  customDomain: z.string().default(''),
-  attachmentEnabled: z.boolean().default(true),
-  attachmentDirectory: z.string().default(DEFAULT_ATTACHMENT_DIRECTORY),
-  attachmentReadRoots: z.string().default(''),
-  attachmentReadOrigins: z.string().default(''),
+export interface LiveConfig {
+  bucket: Volatile<string>
+  region: Volatile<string>
+  prefix: Volatile<string>
+  customDomain: Volatile<string>
+  attachmentEnabled: Volatile<boolean>
+  attachmentDirectory: Volatile<string>
+  attachmentReadRoots: Volatile<string>
+  attachmentReadOrigins: Volatile<string>
+}
+
+export const Config = z.object({
+  bucket: z.string().default('').volatile(),
+  region: z.string().default('').volatile(),
+  prefix: z.string().default('').volatile(),
+  customDomain: z.string().default('').volatile(),
+  attachmentEnabled: z.boolean().default(true).volatile(),
+  attachmentDirectory: z.string().default(DEFAULT_ATTACHMENT_DIRECTORY).volatile(),
+  attachmentReadRoots: z.string().default('').volatile(),
+  attachmentReadOrigins: z.string().default('').volatile(),
 })
+
+export function snapshotConfig(config: LiveConfig): Config {
+  return {
+    bucket: config.bucket.get(),
+    region: config.region.get(),
+    prefix: config.prefix.get(),
+    customDomain: config.customDomain.get(),
+    attachmentEnabled: config.attachmentEnabled.get(),
+    attachmentDirectory: config.attachmentDirectory.get(),
+    attachmentReadRoots: config.attachmentReadRoots.get(),
+    attachmentReadOrigins: config.attachmentReadOrigins.get(),
+  }
+}
 
 export const DEFAULT_CONFIG: Config = {
   bucket: '',

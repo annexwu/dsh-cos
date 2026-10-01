@@ -84,16 +84,11 @@ const CSS = `
 [class*='collapsed'] .dsh-cos-storage-entry-label {
   display: none;
 }
-[data-pane='conversation'],
-[class*='centerCol'] {
-  position: relative;
-}
-.dsh-cos-storage-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 70;
+.dsh-cos-storage-panel {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
-  pointer-events: auto;
   background: var(--dsw-alias-bg-base, #fff);
 }
 .dsh-cos-storage-page {
@@ -1468,6 +1463,8 @@ const CSS = `
   font-size: 18px;
 }
 .dsh-cos-upload-selection__row > button:hover { background: var(--dsw-alias-interactive-bg-hover, #eef1f5); }
+.dsh-cos-upload-show-more { width: 100%; min-height: 36px; border: 1px solid var(--dsw-alias-border-l2, #dfe2e7); border-radius: 7px; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-secondary, #626a76); cursor: pointer; font: inherit; font-size: 12px; }
+.dsh-cos-upload-modal__reading { margin-top: 10px; color: var(--dsw-alias-label-secondary, #626a76); font-size: 12px; }
 .dsh-cos-upload-modal__error {
   margin-top: 12px;
   padding: 9px 11px;
@@ -1851,6 +1848,7 @@ const CSS = `
 .dsh-cos-task-header__icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .dsh-cos-task-header button:hover,
 .dsh-cos-task-header button:focus-visible { background: var(--dsw-alias-interactive-bg-hover, #eef1f5); outline: none; }
+.dsh-cos-task-registration { padding: 9px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2, #edf0f3); color: var(--dsw-alias-label-secondary, #626a76); font-size: 11px; line-height: 1.5; }
 .dsh-cos-task-summary {
   display: flex;
   flex: none;
@@ -1924,6 +1922,7 @@ const CSS = `
   overflow: auto;
   background: var(--dsw-alias-bg-layer-2, #f7f8fa);
 }
+.dsh-cos-task-show-more { width: 100%; min-height: 34px; margin-top: 8px; border: 1px solid var(--dsw-alias-border-l2, #dfe2e7); border-radius: 7px; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-secondary, #626a76); cursor: pointer; font: inherit; font-size: 11px; }
 .dsh-cos-task-empty {
   display: flex;
   min-height: 240px;

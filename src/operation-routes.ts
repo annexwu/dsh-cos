@@ -296,6 +296,7 @@ export function registerOperationRoutes(
             const body: CosObjectPreviewResponse = {
               ok: true,
               kind: 'ci-unavailable',
+              reason: status,
               message: status === 'not-enabled'
                 ? '文档预览服务尚未开通。'
                 : '文档预览服务当前不可用。',

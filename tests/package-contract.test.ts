@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { inject as hostInject } from '../src/index.ts'
 
 type PackageManifest = {
   name: string
@@ -47,10 +48,11 @@ describe('public npm package contract', () => {
     expect(manifest.dsh.bundle.patch).toBe('./cordis.patch.yml')
   })
 
-  it('replaces the local image attachment provider with dsh-cos attachment storage', () => {
+  it('replaces the local attachment provider without waiting for sessions', () => {
     expect(bundlePatch).toContain("id: attachment-local")
     expect(bundlePatch).toContain("name: '@deepseek-ai/dsh-attachment-local'")
     expect(bundlePatch).toContain('disabled: true')
+    expect(hostInject).not.toContain('sessions')
   })
 
   it('builds package artifacts before GitHub or npm installation', () => {

@@ -14,6 +14,7 @@ type Occurrence = {
   ref: string
   occurrenceId: string | number
   offset: number
+  length: number
   label: string
 }
 
@@ -24,7 +25,7 @@ type InputSnapshot = {
 }
 
 type InputActions = {
-  setDraft(text: string): void
+  insertText(text: string, span: { start: number; end: number; draftRev: number }): boolean
 }
 
 type InputReference = {
@@ -54,7 +55,7 @@ type AttachmentButtonProps = {
   attach: (attachment: SessionAttachment, firstInBatch?: boolean) => Promise<void>
 }
 
-let lastError: string | undefined
+const attachmentErrors = new Map<string, string>()
 
 const listeners = new Set<() => void>()
 
@@ -67,30 +68,21 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener)
 }
 
-function attachmentErrorSnapshot(): string | undefined {
-  return lastError
-}
-
-function setError(value: string | undefined): void {
-  lastError = value
+function setError(sessionId: string, value: string | undefined): void {
+  if (value === undefined) attachmentErrors.delete(sessionId)
+  else attachmentErrors.set(sessionId, value)
   notify()
 }
 
-async function insertReference(
-  actx: ActionContext,
-  attachment: SessionAttachment,
-  detectEnd?: number,
-): Promise<{ nextDetectEnd: number }> {
+async function insertReference(actx: ActionContext, attachment: SessionAttachment): Promise<void> {
   const conversation = actx.get('conversation')
   const input = conversation?.input?.for(actx)
   if (input === undefined) throw new Error('会话输入框暂不可用，请稍后重试。')
   const state = input.state.getSnapshot()
   const referenceIndex = state.occurrences.filter(item => item.source === SOURCE_NAME).length + 1
   const ref = encodeSessionAttachmentReference(attachment)
-  const existingOwnReferenceLength = state.occurrences
-    .filter(item => item.source === SOURCE_NAME)
-    .reduce((total, item) => total + sessionAttachmentPath(item.ref).length, 0)
-  const end = detectEnd ?? state.draft.length - existingOwnReferenceLength
+  const end = state.draft.length - state.occurrences
+    .reduce((total, item) => total + item.length - 1, 0)
   const span = { start: end, end, draftRev: state.draftRev }
   const inserted = input.insertReference({
     source: SOURCE_NAME,
@@ -98,7 +90,7 @@ async function insertReference(
     label: getAttachmentCopy().inputReference(referenceIndex),
     clipboardText: attachment.path,
   }, span)
-  if (inserted) return { nextDetectEnd: end + 1 }
+  if (inserted) return
 
   throw new Error(getAttachmentCopy().attachmentError)
 }
@@ -108,13 +100,16 @@ function AttachmentMenu({ sessionId, attach }: AttachmentButtonProps): React.JSX
   const [pickerOpen, setPickerOpen] = useState(false)
 
   const onCosPick = async (items: CosStorageItem[]) => {
-    for (const [index, item] of items.entries()) {
+    const completedKeys: string[] = []
+    for (const item of items) {
       try {
         const response = await importCosAttachment({ sessionId, key: item.key, kind: item.kind })
-        await attach(response.attachment, index === 0)
+        await attach(response.attachment)
+        completedKeys.push(item.key)
       } catch (error) {
         const message = error instanceof Error ? error.message : getAttachmentCopy().attachmentError
-        throw new Error(`添加“${item.name}”失败：${message}`)
+        const prefix = completedKeys.length > 0 ? `已添加 ${completedKeys.length} 个附件。` : ''
+        throw Object.assign(new Error(`${prefix}添加“${item.name}”失败：${message}`), { completedKeys })
       }
     }
   }
@@ -138,33 +133,38 @@ export function ConversationAttachmentButton(props: AttachmentButtonProps): Reac
 }
 
 export function createAttachmentAction(ctx: InputServiceContext, sessionId: string): (attachment: SessionAttachment, firstInBatch?: boolean) => Promise<void> {
-  let nextDetectEnd: number | undefined
-  return async (attachment, firstInBatch = false) => {
-    if (firstInBatch) nextDetectEnd = undefined
-    const result = await insertReference(ctx.sessions.scope(sessionId), attachment, nextDetectEnd)
-    nextDetectEnd = result.nextDetectEnd
-    setError(undefined)
+  return async (attachment) => {
+    await insertReference(ctx.sessions.scope(sessionId), attachment)
+    setError(sessionId, undefined)
   }
 }
 
 export function ConversationAttachmentDock({ sessionId, useInput, inputActions }: AttachmentSlotProps): React.JSX.Element | null {
   const copy = getAttachmentCopy()
   const state = useInput(snapshot => snapshot)
-  const error = useSyncExternalStore(subscribe, attachmentErrorSnapshot)
+  const error = useSyncExternalStore(subscribe, () => attachmentErrors.get(sessionId))
   const occurrences = state.occurrences.filter(item => item.source === SOURCE_NAME)
 
   if (occurrences.length === 0 && error === undefined) return null
 
   const remove = (occurrence: Occurrence) => {
-    let end = occurrence.offset
-    while (end < state.draft.length && !/\s/.test(state.draft[end])) end += 1
-    inputActions.setDraft(`${state.draft.slice(0, occurrence.offset)}${state.draft.slice(end)}`)
-    void removeSessionAttachment({ sessionId, path: sessionAttachmentPath(occurrence.ref) }).catch(() => {})
+    const precedingExpansion = state.occurrences
+      .filter(item => item.offset < occurrence.offset)
+      .reduce((total, item) => total + item.length - 1, 0)
+    const start = occurrence.offset - precedingExpansion
+    const removed = inputActions.insertText('', { start, end: start + 1, draftRev: state.draftRev })
+    if (!removed) {
+      setError(sessionId, '无法从输入框移除附件，请稍后重试。')
+      return
+    }
+    setError(sessionId, undefined)
+    void removeSessionAttachment({ sessionId, path: sessionAttachmentPath(occurrence.ref) })
+      .catch(error => setError(sessionId, error instanceof Error ? error.message : '删除附件副本失败。'))
   }
 
   return (
     <div className="dsh-cos-conversation-dock">
-      {error && <div className="dsh-cos-conversation-dock__error" role="alert">{error}<button type="button" onClick={() => setError(undefined)}>×</button></div>}
+      {error && <div className="dsh-cos-conversation-dock__error" role="alert">{error}<button type="button" onClick={() => setError(sessionId, undefined)}>×</button></div>}
       {occurrences.map(occurrence => {
         const attachment = decodeSessionAttachmentReference(occurrence.ref)
         const path = attachment?.path ?? occurrence.ref

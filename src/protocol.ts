@@ -167,6 +167,7 @@ export interface CosObjectPreviewResponse {
   kind: CosPreviewKind
   url?: string
   text?: string
+  reason?: 'not-enabled' | 'unavailable'
   message?: string
 }
 

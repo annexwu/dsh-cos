@@ -37,6 +37,8 @@ export async function testCosConnection(config: Config, credentials: CosCredenti
 }
 
 interface CosListData {
+  IsTruncated?: string | boolean
+  NextMarker?: string
   CommonPrefixes?: Array<{ Prefix: string }>
   Contents?: Array<{
     Key: string
@@ -45,6 +47,17 @@ interface CosListData {
     ETag: string
     StorageClass: string
   }>
+}
+
+export function nextCosListMarker(data: CosListData, previous?: string): string | undefined {
+  if (data.IsTruncated !== 'true' && data.IsTruncated !== true) return undefined
+  const keys = [
+    ...(data.Contents ?? []).map(item => item.Key),
+    ...(data.CommonPrefixes ?? []).map(item => item.Prefix),
+  ]
+  const next = data.NextMarker || keys.sort().at(-1)
+  if (!next || next === previous) throw new Error('COS 返回的分页标记无效，已停止以防止重复读取。')
+  return next
 }
 
 export function mapCosStorageItems(
@@ -89,6 +102,12 @@ export interface CosFolderObject {
   size: number
 }
 
+export function assertCosFolderAttachmentBudget(count: number, totalBytes: number): void {
+  if (count > 1_000 || totalBytes > 1024 ** 3) {
+    throw new Error('COS 文件夹附件超过 1000 个文件或 1 GiB，请选择更小的目录分批添加。')
+  }
+}
+
 export async function listCosFolderObjects(
   config: Config,
   credentials: CosCredentials,
@@ -96,6 +115,7 @@ export async function listCosFolderObjects(
 ): Promise<CosFolderObject[]> {
   const cos = createCosClient(credentials)
   const objects: CosFolderObject[] = []
+  let totalBytes = 0
   let marker: string | undefined
   do {
     const data = await cos.getBucket({
@@ -107,10 +127,14 @@ export async function listCosFolderObjects(
     })
     for (const item of data.Contents ?? []) {
       if (item.Key.startsWith(prefix) && item.Key !== prefix && !item.Key.endsWith('/')) {
-        objects.push({ key: item.Key, size: Number(item.Size) || 0 })
+        const size = Number(item.Size)
+        if (!Number.isSafeInteger(size) || size < 0) throw new Error('COS 对象大小无效，无法导入会话附件。')
+        totalBytes += size
+        assertCosFolderAttachmentBudget(objects.length + 1, totalBytes)
+        objects.push({ key: item.Key, size })
       }
     }
-    marker = data.IsTruncated === 'true' && data.NextMarker ? data.NextMarker : undefined
+    marker = nextCosListMarker(data, marker)
   } while (marker !== undefined)
   return objects
 }
@@ -132,7 +156,7 @@ export async function listCosObjects(
     Delimiter: '/',
     MaxKeys: maxKeys,
   })
-  const nextMarker = data.IsTruncated === 'true' && data.NextMarker ? data.NextMarker : undefined
+  const nextMarker = nextCosListMarker(data, marker)
   return {
     items: mapCosStorageItems(config.prefix, currentPrefix, data),
     ...(nextMarker === undefined ? {} : { nextMarker }),
@@ -303,7 +327,7 @@ export async function uploadCosObject(options: UploadCosObjectOptions): Promise<
       const currentSize = Math.min(chunkSize, options.size - consumed)
       const partBody = Readable.from(reader.read(currentSize, waitIfPaused, (bytes) => {
         consumed += bytes
-        options.onProgress(consumed)
+        options.onProgress(Math.min(consumed, options.size - 1))
       }))
       const result = await cos.multipartUpload({
         Bucket: options.config.bucket,
@@ -562,8 +586,7 @@ export async function deleteCosObject(
       if ((result.Error?.length ?? 0) > 0) throw new Error('部分对象删除失败')
       deleted += result.Deleted?.length ?? batch.length
     }
-    marker = data.IsTruncated === 'true' ? data.NextMarker : undefined
-    if (keys.length === 0) marker = undefined
+    marker = nextCosListMarker(data, marker)
   } while (marker !== undefined)
   return deleted
 }

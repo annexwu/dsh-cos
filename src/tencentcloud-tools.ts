@@ -268,6 +268,7 @@ async function prepareWorkspaceTransfer(action: string, parameters: Record<strin
 
   const root = await workspaceRoot(agent)
   if (action === 'upload') {
+    if ('output' in parameters) throw new Error('Parameters.output is only permitted for download.')
     const file = safeWorkspaceRelativePath(parameters.file ?? '', 'file')
     const candidate = resolve(root, ...file.split('/'))
     if (!contains(root, candidate)) throw new Error('Parameters.file escapes the current workspace.')
@@ -287,6 +288,7 @@ async function prepareWorkspaceTransfer(action: string, parameters: Record<strin
     }
   }
 
+  if ('file' in parameters) throw new Error('Parameters.file is only permitted for upload.')
   const output = safeWorkspaceRelativePath(parameters.output ?? '', 'output')
   const target = resolve(root, ...output.split('/'))
   if (!contains(root, target)) throw new Error('Parameters.output escapes the current workspace.')

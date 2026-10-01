@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CosStorageItem, ListCosAttachmentResponse } from '../protocol.ts'
-import { CosStorageApiError, createFolder, createUploadTask, listCosAttachmentObjects, uploadTaskContent } from './api.ts'
+import { createFolder, createUploadTask, listCosAttachmentObjects, uploadTaskContent } from './api.ts'
 import type { AttachmentCopy } from './attachment-copy.ts'
 import { StorageIcon } from './StorageIcon.tsx'
 import { formatBytes, formatDate, formatStorageClass } from './storage-format.ts'
@@ -60,7 +60,11 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
         setSelectedKeys(new Set())
       }
     }).catch((loadError: unknown) => {
-      if (!controller.signal.aborted) setError(errorMessage(loadError, copy))
+      if (!controller.signal.aborted) {
+        setData(undefined)
+        setSelectedKeys(new Set())
+        setError(errorMessage(loadError, copy))
+      }
     }).finally(() => {
       if (!controller.signal.aborted) setLoading(false)
     })
@@ -76,11 +80,15 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
   }, [busy, onClose])
 
   const refresh = () => {
+    setData(undefined)
+    setSelectedKeys(new Set())
     setMarkers([undefined])
     setPageIndex(0)
     setRefreshKey(value => value + 1)
   }
   const navigate = (nextPath: string) => {
+    setData(undefined)
+    setSelectedKeys(new Set())
     setPath(nextPath)
     setMarkers([undefined])
     setPageIndex(0)
@@ -114,6 +122,11 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
       await onPick(selected)
       onClose()
     } catch (attachError) {
+      const completedKeys = (attachError as { completedKeys?: unknown } | null)?.completedKeys
+      if (Array.isArray(completedKeys)) {
+        const completed = new Set(completedKeys.filter((key): key is string => typeof key === 'string'))
+        setSelectedKeys(current => new Set([...current].filter(key => !completed.has(key))))
+      }
       setError(errorMessage(attachError, copy))
     } finally {
       setAttaching(false)
@@ -143,7 +156,7 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
     try {
       for (const file of filesToUpload) {
         const task = await createUploadTask({ path, name: file.name, size: file.size, contentType: file.type || undefined })
-        await uploadTaskContent(task.uploadUrl, file, () => {}).promise
+        await uploadTaskContent(task.uploadUrl, file).promise
         completed += 1
         setUploadProgress({ completed, total: filesToUpload.length })
       }
@@ -195,8 +208,8 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
         <div className="dsh-cos-attachment-body">
           {loading && <div className="dsh-cos-attachment-state">{copy.loading}</div>}
           {!loading && error && <div className="dsh-cos-attachment-error" role="alert">{error}</div>}
-          {!loading && !error && data?.items.length === 0 && <div className="dsh-cos-attachment-state">{copy.empty}</div>}
-          {!loading && !error && data !== undefined && data.items.length > 0 && (
+          {!loading && data?.items.length === 0 && <div className="dsh-cos-attachment-state">{copy.empty}</div>}
+          {!loading && data !== undefined && data.items.length > 0 && (
             <div className="dsh-cos-attachment-list" role="table">
               <div className="dsh-cos-attachment-list__header" role="row">
                 <button type="button" className="dsh-cos-attachment-list__select-all" aria-label={allCurrentPageSelected ? copy.clearCurrentPageSelection : copy.selectCurrentPage} aria-pressed={allCurrentPageSelected} data-indeterminate={!allCurrentPageSelected && hasCurrentPageSelection} disabled={busy || files.length === 0} onClick={toggleCurrentPageSelection}>{allCurrentPageSelected ? '✓' : hasCurrentPageSelection ? '−' : ''}</button>
@@ -220,7 +233,21 @@ export function AttachmentPicker({ sessionId, copy, onPick, onClose }: Attachmen
           )}
         </div>
         <footer>
-          <div><button type="button" disabled={pageIndex === 0 || busy} onClick={() => setPageIndex(index => index - 1)}>{copy.previousPage}</button><button type="button" disabled={!data?.nextMarker || busy} onClick={() => { if (data?.nextMarker === undefined) return; setMarkers(current => [...current.slice(0, pageIndex + 1), data.nextMarker]); setPageIndex(index => index + 1) }}>{copy.nextPage}</button></div>
+          <div>
+            <button type="button" disabled={pageIndex === 0 || busy} onClick={() => {
+              setData(undefined)
+              setSelectedKeys(new Set())
+              setPageIndex(index => index - 1)
+            }}>{copy.previousPage}</button>
+            <button type="button" disabled={!data?.nextMarker || busy} onClick={() => {
+              const nextMarker = data?.nextMarker
+              if (nextMarker === undefined) return
+              setData(undefined)
+              setSelectedKeys(new Set())
+              setMarkers(current => [...current.slice(0, pageIndex + 1), nextMarker])
+              setPageIndex(index => index + 1)
+            }}>{copy.nextPage}</button>
+          </div>
           <div><button type="button" disabled={busy} onClick={onClose}>{copy.cancel}</button><button type="button" className="is-primary" disabled={selected.length === 0 || busy} onClick={() => void attach()}>{attaching ? copy.attaching : copy.attach}</button></div>
         </footer>
       </section>

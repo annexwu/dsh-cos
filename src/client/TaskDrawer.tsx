@@ -1,12 +1,16 @@
 import React, { useEffect, useState } from 'react'
 import type { CosUploadTask } from '../protocol.ts'
 import type { StorageCopy } from './storage-copy.ts'
+import type { UploadBatchProgress, UploadRegistrationProgress } from './upload-coordinator.ts'
 import { formatBytes, formatDuration } from './storage-format.ts'
 
 interface TaskDrawerProps {
   tasks: CosUploadTask[]
+  registration?: UploadRegistrationProgress
+  batch?: UploadBatchProgress
   copy: StorageCopy
   canRetry: (taskId: string) => boolean
+  hasBrowserFile?: (taskId: string) => boolean
   onPause: (taskId: string) => Promise<void>
   onResume: (taskId: string) => Promise<void>
   onCancel: (taskId: string) => Promise<void>
@@ -20,8 +24,8 @@ interface TaskDrawerProps {
 
 function progressOf(task: CosUploadTask): number {
   if (task.status === 'completed') return 100
-  if (task.size === 0) return task.status === 'uploading' ? 50 : 0
-  return Math.max(0, Math.min(100, Math.round((task.uploadedBytes / task.size) * 100)))
+  if (task.size === 0) return 0
+  return Math.max(0, Math.min(99, Math.floor((task.uploadedBytes / task.size) * 100)))
 }
 
 function ChevronIcon({ direction }: { direction: 'up' | 'down' }): React.JSX.Element {
@@ -39,6 +43,8 @@ export function TaskDrawer(props: TaskDrawerProps): React.JSX.Element {
   const [actionError, setActionError] = useState<string>()
   const [busyAction, setBusyAction] = useState<string>()
   const [now, setNow] = useState(Date.now())
+  const [visibleCount, setVisibleCount] = useState(30)
+  const hasUploading = tasks.some(task => task.status === 'uploading')
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -46,16 +52,25 @@ export function TaskDrawer(props: TaskDrawerProps): React.JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
   useEffect(() => {
+    if (!hasUploading) return
     setNow(Date.now())
-    if (!tasks.some(task => task.status === 'uploading')) return
     const interval = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(interval)
-  }, [tasks])
+  }, [hasUploading])
 
   const terminalCount = tasks.filter(task => task.status === 'completed' || task.status === 'cancelled').length
-  const totalSize = tasks.reduce((sum, task) => sum + task.size, 0)
-  const totalUploaded = tasks.reduce((sum, task) => sum + task.uploadedBytes, 0)
-  const overallProgress = totalSize === 0 ? 0 : Math.round((totalUploaded / totalSize) * 100)
+  const totalSize = props.batch?.totalBytes ?? tasks.reduce((sum, task) => sum + task.size, 0)
+  const totalUploaded = props.batch?.uploadedBytes ?? tasks.reduce((sum, task) => sum + (task.status === 'failed' || task.status === 'cancelled' ? 0 : task.uploadedBytes), 0)
+  const allCompleted = props.batch
+    ? props.batch.accepted > 0 && props.batch.completed === props.batch.accepted && props.batch.failed === 0
+      && props.batch.failedTasks === 0 && props.registration === undefined
+    : tasks.length > 0 && tasks.every(task => task.status === 'completed')
+  const overallProgress = allCompleted ? 100
+    : totalSize === 0 ? 0 : Math.max(0, Math.min(99, Math.floor((totalUploaded / totalSize) * 100)))
+  const shownTasks = [...tasks].sort((left, right) => {
+    const priority = { uploading: 0, paused: 1, queued: 2, failed: 3, cancelled: 4, completed: 5 }
+    return priority[left.status] - priority[right.status]
+  }).slice(0, visibleCount)
   const run = async (key: string, action: () => Promise<void>) => {
     if (busyAction !== undefined) return
     setBusyAction(key)
@@ -65,28 +80,33 @@ export function TaskDrawer(props: TaskDrawerProps): React.JSX.Element {
 
   return <aside className={`dsh-cos-task-drawer${collapsed ? ' is-collapsed' : ''}`} role="dialog" aria-labelledby="dsh-cos-task-title">
     <header className="dsh-cos-task-header">
-      <div><h2 id="dsh-cos-task-title">{copy.tasksTitle}</h2><span>{copy.taskCount(tasks.length)} · {overallProgress}%</span></div>
+      <div><h2 id="dsh-cos-task-title">{copy.tasksTitle}</h2><span>{copy.taskCount(tasks.length)} · {overallProgress}%{props.batch && ` · 本批已完成 ${props.batch.completed}/${props.batch.accepted}`}{props.registration && ` · 准备中 ${props.registration.processed}/${props.registration.total}`}</span></div>
       <div className="dsh-cos-task-header__actions">
         <button type="button" aria-label={collapsed ? copy.expandTasks : copy.collapseTasks} aria-expanded={!collapsed} onClick={() => onCollapsedChange(!collapsed)}><ChevronIcon direction={collapsed ? 'up' : 'down'} /></button>
         <button type="button" aria-label={copy.close} onClick={onClose}><CloseIcon /></button>
       </div>
     </header>
     {!collapsed && <>
+      {props.registration && <div className="dsh-cos-task-registration" role="status">
+        正在准备文件：{props.registration.processed}/{props.registration.total} · 已加入 {props.registration.accepted} · 跳过 {props.registration.skipped} · 失败 {props.registration.failed}
+      </div>}
       <div className="dsh-cos-task-summary"><div className="dsh-cos-task-summary__bar"><span style={{ width: `${overallProgress}%` }} /></div><span>{formatBytes(totalUploaded)} / {formatBytes(totalSize)}</span></div>
       <div className="dsh-cos-task-actions"><button type="button" disabled={terminalCount === 0 || busyAction !== undefined} onClick={() => void run('clear', props.onClearCompleted)}>{copy.clearCompleted}</button></div>
       {actionError && <div className="dsh-cos-task-action-error" role="alert">{actionError}</div>}
       <div className="dsh-cos-task-list">
-        {tasks.map(task => {
+        {shownTasks.map(task => {
           const progress = progressOf(task)
           const startedAt = task.startedAt ? new Date(task.startedAt).getTime() : undefined
           const elapsed = startedAt === undefined ? 0 : Math.max(0, (task.finishedAt ? new Date(task.finishedAt).getTime() : now) - startedAt)
           const retryAvailable = props.canRetry(task.id)
+          const missingQueuedFile = task.status === 'queued' && task.source !== 'local' && props.hasBrowserFile?.(task.id) === false
           return <article key={task.id} className={`dsh-cos-task-item is-${task.status}`}>
             <div className="dsh-cos-task-item__top"><strong title={task.name}>{task.name}</strong><span>{copy.taskStatus[task.status]} · {progress}%</span></div>
             <div className="dsh-cos-task-progress" aria-label={`${progress}%`}><span style={{ width: `${progress}%` }} /></div>
             <div className="dsh-cos-task-item__meta"><span>{formatBytes(task.uploadedBytes)} / {formatBytes(task.size)}</span>{task.status === 'uploading' && <span>{formatBytes(task.speedBytesPerSecond)}/s · {formatDuration(elapsed)}</span>}</div>
             {task.error && <div className="dsh-cos-task-item__error">{task.error}</div>}
-            {(task.status === 'failed' || task.status === 'cancelled') && !retryAvailable && <div className="dsh-cos-task-item__hint">{copy.localFileMissing}</div>}
+            {missingQueuedFile && <div className="dsh-cos-task-item__hint">{copy.queuedFileMissing}</div>}
+            {(task.status === 'failed' || task.status === 'cancelled') && !retryAvailable && task.source !== 'local' && <div className="dsh-cos-task-item__hint">{copy.localFileMissing}</div>}
             <div className="dsh-cos-task-item__buttons">
               {task.status === 'uploading' && <button type="button" disabled={busyAction !== undefined} onClick={() => void run(`pause:${task.id}`, () => props.onPause(task.id))}>{copy.pauseTask}</button>}
               {task.status === 'paused' && <button type="button" disabled={busyAction !== undefined} onClick={() => void run(`resume:${task.id}`, () => props.onResume(task.id))}>{copy.resumeTask}</button>}
@@ -96,6 +116,9 @@ export function TaskDrawer(props: TaskDrawerProps): React.JSX.Element {
             </div>
           </article>
         })}
+        {tasks.length > visibleCount && <button type="button" className="dsh-cos-task-show-more" onClick={() => setVisibleCount(count => count + 30)}>
+          显示更多（剩余 {tasks.length - visibleCount} 项）
+        </button>}
       </div>
     </>}
   </aside>

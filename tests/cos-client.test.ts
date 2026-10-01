@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCosClient, decodeCosObjectText, mapCosStorageItems, multipartChunkSize, probeCosDocumentPreview } from '../src/cos-client.ts'
+import { assertCosFolderAttachmentBudget, createCosClient, decodeCosObjectText, mapCosStorageItems, multipartChunkSize, nextCosListMarker, probeCosDocumentPreview } from '../src/cos-client.ts'
 import { buildDshCosUserAgent, DSH_COS_USER_AGENT } from '../src/user-agent.ts'
 
 describe('COS object list mapping', () => {
@@ -44,6 +44,26 @@ describe('COS object list mapping', () => {
         storageClass: 'STANDARD_IA',
       },
     ])
+  })
+
+  it('continues truncated listings when COS omits NextMarker and rejects non-advancing pages', () => {
+    const data = {
+      IsTruncated: 'true',
+      CommonPrefixes: [{ Prefix: 'root/010/' }, { Prefix: 'root/020/' }],
+      Contents: [{ Key: 'root/015', Size: '1', LastModified: '', ETag: '', StorageClass: 'STANDARD' }],
+    }
+    expect(nextCosListMarker(data)).toBe('root/020/')
+    expect(nextCosListMarker({ IsTruncated: 'true', Contents: [{ Key: 'root/100', Size: '1', LastModified: '', ETag: '', StorageClass: '' }] }, 'root/099')).toBe('root/100')
+    expect(nextCosListMarker({ IsTruncated: 'true', NextMarker: 'explicit' })).toBe('explicit')
+    expect(nextCosListMarker({ IsTruncated: 'false' })).toBeUndefined()
+    expect(() => nextCosListMarker({ IsTruncated: 'true' })).toThrow('分页标记无效')
+    expect(() => nextCosListMarker(data, 'root/020/')).toThrow('分页标记无效')
+  })
+
+  it('caps folder attachments before an unbounded directory download can exhaust the workspace', () => {
+    expect(() => assertCosFolderAttachmentBudget(1_000, 1024 ** 3)).not.toThrow()
+    expect(() => assertCosFolderAttachmentBudget(1_001, 1)).toThrow('超过 1000 个文件或 1 GiB')
+    expect(() => assertCosFolderAttachmentBudget(1, 1024 ** 3 + 1)).toThrow('超过 1000 个文件或 1 GiB')
   })
 
   it('chooses multipart chunks for files larger than 5GB without rejecting them', () => {

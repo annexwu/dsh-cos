@@ -42,6 +42,17 @@ describe('session attachment storage', () => {
     await expect(readFile(attachment.path, 'utf8')).resolves.toBe('contents')
   })
 
+  it('keeps two concurrent imports of the same file name independently readable', async () => {
+    const cwd = await workspace()
+    const [first, second] = await Promise.all([
+      writeSessionAttachment(cwd, 'session-1', 'report.txt', Readable.from(['first']), 5, 'cos'),
+      writeSessionAttachment(cwd, 'session-1', 'report.txt', Readable.from(['second']), 6, 'cos'),
+    ])
+    expect(first.path).not.toBe(second.path)
+    await expect(readFile(first.path, 'utf8')).resolves.toBe('first')
+    await expect(readFile(second.path, 'utf8')).resolves.toBe('second')
+  })
+
   it('sanitizes traversal-shaped names and keeps session ids directory-safe', () => {
     expect(sanitizeSessionId('session/../../other')).toBe('session_other')
     expect(sanitizeAttachmentName('../secret.txt')).toBe('_secret.txt')
@@ -56,6 +67,15 @@ describe('session attachment storage', () => {
     await expect(readFile(join(root, 'reports', 'a.txt'), 'utf8')).resolves.toBe('A')
     await removeSessionAttachment(cwd, 'session-2', attachment.path)
     await expect(readFile(join(root, 'reports', 'b.txt'), 'utf8')).rejects.toThrow()
+  })
+
+  it('refuses to remove the session attachment root and preserves sibling files', async () => {
+    const cwd = await workspace()
+    const first = await writeSessionAttachment(cwd, 'session-1', 'first.txt', Readable.from(['first']), 5, 'local')
+    const second = await writeSessionAttachment(cwd, 'session-1', 'second.txt', Readable.from(['second']), 6, 'local')
+    await expect(removeSessionAttachment(cwd, 'session-1', sessionAttachmentDirectory(cwd, 'session-1'))).rejects.toThrow('不能删除会话附件根目录')
+    await expect(readFile(first.path, 'utf8')).resolves.toBe('first')
+    await expect(readFile(second.path, 'utf8')).resolves.toBe('second')
   })
 
   it('keeps each COS file or directory attached to its original object identity', () => {

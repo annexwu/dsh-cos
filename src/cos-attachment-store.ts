@@ -5,8 +5,11 @@ import { AttachmentError, AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type {
   ImageAttachmentLimits,
   ImageAttachmentRef,
-  ImageRequestPolicy,
+  ImageRequestTarget,
   RequestImageAttachment,
+  FileAttachmentRef,
+  SaveFileAttachment,
+  SaveFileStreamAttachment,
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
@@ -30,6 +33,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { attachmentReadOrigins, attachmentReadRoots, attachmentRootPrefix, type AttachmentReadOrigin } from './cos-config.ts'
 import { createCosClient, isCosNotFoundError, type CosCredentials } from './cos-client.ts'
 import type { Config } from './config.ts'
+import { fileHostPath, readLocalFileStream, saveLocalFile, saveLocalFileStream } from './local-file-attachments.ts'
 
 const OBJECTS_DIRECTORY = 'v1/objects'
 
@@ -167,6 +171,22 @@ export class CosAttachmentStore extends AttachmentStore {
     return undefined
   }
 
+  override saveFile(input: SaveFileAttachment): Promise<FileAttachmentRef> {
+    return saveLocalFile(this.localRoot, input)
+  }
+
+  override saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef> {
+    return saveLocalFileStream(this.localRoot, input)
+  }
+
+  override readFileStream(ref: FileAttachmentRef, signal?: AbortSignal): AsyncIterable<Uint8Array> {
+    return readLocalFileStream(this.localRoot, ref, signal)
+  }
+
+  override fileHostPath(ref: FileAttachmentRef): string {
+    return fileHostPath(this.localRoot, ref)
+  }
+
   async readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> {
     const config = this.services.getConfig()
     if (configured(config)) {
@@ -188,10 +208,10 @@ export class CosAttachmentStore extends AttachmentStore {
 
   override async readImageRequest(
     ref: ImageAttachmentRef,
-    policy: ImageRequestPolicy,
+    target: ImageRequestTarget,
     signal?: AbortSignal,
   ): Promise<RequestImageAttachment> {
-    return await readRequestImageFile(this.variantCacheRoot, await this.readImage(ref, signal), policy, signal)
+    return await readRequestImageFile(this.variantCacheRoot, await this.readImage(ref, signal), target, signal)
   }
 
   private async savePrepared(prepared: Awaited<ReturnType<typeof prepareImageFile>>): Promise<ImageAttachmentRef> {

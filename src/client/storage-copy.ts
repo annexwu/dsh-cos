@@ -45,6 +45,7 @@ export interface StorageCopy {
   elapsed: string
   overallProgress: string
   localFileMissing: string
+  queuedFileMissing: string
   taskStatus: Record<CosUploadStatus, string>
   refresh: string
   refreshing: string
@@ -171,6 +172,7 @@ const copies: Record<'zh' | 'en', StorageCopy> = {
     elapsed: '耗时',
     overallProgress: '总体进度',
     localFileMissing: '页面刷新后本地文件不可恢复，请重新选择文件上传。',
+    queuedFileMissing: '当前页面没有原文件。若其他标签页仍在上传，请继续等待；否则取消此任务后重新选择文件。',
     taskStatus: {
       queued: '等待上传',
       uploading: '上传中',
@@ -304,6 +306,7 @@ const copies: Record<'zh' | 'en', StorageCopy> = {
     elapsed: 'Elapsed',
     overallProgress: 'Overall progress',
     localFileMissing: 'The local file is unavailable after a page reload. Select it again to upload.',
+    queuedFileMissing: 'This tab no longer holds the source file. Wait if another tab is uploading it; otherwise cancel this task and reselect the file.',
     taskStatus: {
       queued: 'Queued',
       uploading: 'Uploading',

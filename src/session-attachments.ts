@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs'
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join, relative, resolve, sep } from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -63,11 +63,14 @@ async function uniqueFilePath(root: string, rawName: string): Promise<{ name: st
   const extension = extensionStart > 0 ? initial.slice(extensionStart) : ''
   for (let index = 0; index < 10_000; index += 1) {
     const name = index === 0 ? initial : `${stem} (${index})${extension}`
+    if (Buffer.byteLength(name, 'utf8') > MAX_NAME_BYTES) throw new ConfigValidationError('同名附件文件名过长，请缩短文件名。')
     const path = ensureInside(root, join(root, name))
     try {
-      await stat(path)
-    } catch {
+      const handle = await open(path, 'wx')
+      await handle.close()
       return { name, path }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
   }
   throw new ConfigValidationError('同名附件过多，请更换文件名后重试。')
@@ -77,12 +80,13 @@ async function uniqueDirectory(root: string, rawName: string): Promise<{ name: s
   const initial = sanitizeAttachmentName(rawName)
   for (let index = 0; index < 10_000; index += 1) {
     const name = index === 0 ? initial : `${initial} (${index})`
+    if (Buffer.byteLength(name, 'utf8') > MAX_NAME_BYTES) throw new ConfigValidationError('同名附件目录名过长，请缩短目录名。')
     const path = ensureInside(root, join(root, name))
     try {
-      await stat(path)
-    } catch {
       await mkdir(path, { recursive: false })
       return { name, path }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
     }
   }
   throw new ConfigValidationError('同名附件目录过多，请更换目录名后重试。')
@@ -121,8 +125,13 @@ export async function writeSessionAttachment(
   const root = sessionAttachmentDirectory(cwd, sessionId)
   await mkdir(root, { recursive: true })
   const { name, path } = await uniqueFilePath(root, rawName)
-  const size = await streamToFile(source, path, expectedSize)
-  return { path, name, size, source: origin, isDirectory: false }
+  try {
+    const size = await streamToFile(source, path, expectedSize)
+    return { path, name, size, source: origin, isDirectory: false }
+  } catch (error) {
+    await rm(path, { force: true }).catch(() => {})
+    throw error
+  }
 }
 
 export async function createSessionAttachmentFolder(
@@ -168,6 +177,7 @@ export async function setAttachmentDirectorySize(attachment: SessionAttachment):
 export async function removeSessionAttachment(cwd: string, sessionId: string, attachmentPath: string): Promise<void> {
   const root = sessionAttachmentDirectory(cwd, sessionId)
   const target = ensureInside(root, attachmentPath)
+  if (target === resolve(root)) throw new ConfigValidationError('不能删除会话附件根目录。')
   await rm(target, { force: true, recursive: true })
 }
 

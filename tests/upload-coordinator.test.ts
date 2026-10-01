@@ -159,8 +159,8 @@ describe('UploadCoordinator', () => {
     expect(result).toEqual({ accepted: 26, skipped: 0, errors: [] })
     expect(pending.size).toBe(3)
     expect(coordinator.getSnapshot().filter(task => task.status === 'queued')).toHaveLength(23)
-    expect(Math.max(...vi.mocked(api.createUploadTask).mock.invocationCallOrder)).toBeLessThan(
-      Math.min(...vi.mocked(api.uploadTaskContent).mock.invocationCallOrder),
+    expect(Math.min(...vi.mocked(api.uploadTaskContent).mock.invocationCallOrder)).toBeLessThan(
+      Math.max(...vi.mocked(api.createUploadTask).mock.invocationCallOrder),
     )
 
     while (pending.size > 0) {
@@ -172,6 +172,42 @@ describe('UploadCoordinator', () => {
     expect(api.uploadTaskContent).toHaveBeenCalledTimes(26)
     expect(maxActiveUploads).toBe(3)
     expect(coordinator.getSnapshot().every(task => task.status === 'completed')).toBe(true)
+    coordinator.dispose()
+  })
+
+  it('keeps a large batch responsive and bounded while its first uploads are still pending', async () => {
+    const coordinator = new UploadCoordinator(() => undefined)
+    const candidates = Array.from({ length: 120 }, (_, index) => candidate(index))
+    const upload = coordinator.addFiles('', candidates, 'overwrite')
+    for (let count = 0; count < 30 && vi.mocked(api.createUploadTask).mock.calls.length < 48; count += 1) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    expect(vi.mocked(api.createUploadTask)).toHaveBeenCalledTimes(48)
+    expect(coordinator.getRegistrationSnapshot()).toMatchObject({ total: 120, processed: 48 })
+    expect(pending.size).toBe(3)
+    expect(maxActiveUploads).toBe(3)
+
+    let finished = false
+    void upload.then(() => { finished = true })
+    for (let count = 0; count < 200 && !finished; count += 1) {
+      const taskId = pending.keys().next().value
+      if (taskId !== undefined) complete(taskId)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    expect(finished).toBe(true)
+    expect(await upload).toEqual({ accepted: 120, skipped: 0, errors: [] })
+    expect(coordinator.getRegistrationSnapshot()).toBeUndefined()
+    const batch = coordinator.getBatchSnapshot()!
+    expect(batch).toMatchObject({ total: 120, accepted: 120, totalBytes: candidates.reduce((sum, item) => sum + item.file.size, 0) })
+    expect(batch.completed).toBeGreaterThan(0)
+    serverTasks = serverTasks.filter(task => task.status !== 'completed')
+    await coordinator.refresh(false)
+    expect(coordinator.getBatchSnapshot()).toMatchObject({
+      completed: batch.completed,
+      uploadedBytes: batch.uploadedBytes,
+      totalBytes: batch.totalBytes,
+    })
     coordinator.dispose()
   })
 

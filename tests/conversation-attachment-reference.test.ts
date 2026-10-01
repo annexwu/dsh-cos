@@ -3,7 +3,7 @@ import type { SessionAttachment } from '../src/protocol.ts'
 import { createAttachmentAction } from '../src/client/ConversationAttachments.tsx'
 import { apply } from '../src/client/index.ts'
 
-type Occurrence = { source: string; ref: string; occurrenceId: string; offset: number; label: string }
+type Occurrence = { source: string; ref: string; occurrenceId: string; offset: number; length: number; label: string }
 type RegisteredSource = {
   name: string
   codec: {
@@ -37,11 +37,12 @@ function harness() {
                 source: reference.source,
                 ref: reference.ref,
                 label: reference.label,
-                offset: span.start,
+                offset: drafts.get(sessionId)!.length,
+                length: reference.clipboardText.length,
                 occurrenceId: `${sessionId}-${sessionOccurrences.length + 1}`,
               })
               drafts.set(sessionId, `${drafts.get(sessionId)!}${reference.clipboardText} `)
-              detectEnds.set(sessionId, detectEnds.get(sessionId)! + 1)
+              detectEnds.set(sessionId, detectEnds.get(sessionId)! + 2)
               return true
             },
           }),
@@ -49,6 +50,17 @@ function harness() {
       }),
       bail: () => true,
     }
+  }
+  const seedForeignReference = (sessionId: string) => {
+    scope(sessionId)
+    const prefix = drafts.get(sessionId)!
+    const clipboardText = '/other-reference'
+    occurrences.get(sessionId)!.push({
+      source: 'other', ref: 'other', label: '外部引用',
+      occurrenceId: `${sessionId}-foreign`, offset: prefix.length + 1, length: clipboardText.length,
+    })
+    drafts.set(sessionId, `${prefix} ${clipboardText} `)
+    detectEnds.set(sessionId, prefix.length + 3)
   }
   const ctx = {
     effect(fn: () => unknown, label?: string) {
@@ -75,6 +87,7 @@ function harness() {
       return action(attachment, firstInBatch)
     },
     occurrences: (sessionId: string) => occurrences.get(sessionId) ?? [],
+    seedForeignReference,
     insertCalls: () => insertCalls,
     source: () => source,
     dispose: () => cleanups.splice(0).reverse().forEach(cleanup => cleanup()),
@@ -116,6 +129,19 @@ describe('COS conversation attachment input reference', () => {
       expect(restored[0]).toContain('地域：ap-shanghai')
       expect(restored[1]).toContain('COS URI：cos://second-1250000000/reports/second.pdf')
       expect(restored[1]).toContain('地域：ap-beijing')
+    } finally {
+      test.dispose()
+    }
+  })
+
+  it('inserts two COS references after an unrelated existing chip and its separator', async () => {
+    const test = harness()
+    test.seedForeignReference('session-1')
+    try {
+      await test.attach('session-1', cosAttachment('first.pdf', 'session-1', 'test-1250000000', 'ap-shanghai', 'first.pdf'))
+      await test.attach('session-1', cosAttachment('second.pdf', 'session-1', 'test-1250000000', 'ap-shanghai', 'second.pdf'))
+      expect(test.insertCalls()).toBe(2)
+      expect(test.occurrences('session-1').map(item => item.source)).toEqual(['other', 'dsh-cos-attachment', 'dsh-cos-attachment'])
     } finally {
       test.dispose()
     }

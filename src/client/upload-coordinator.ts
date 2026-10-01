@@ -23,7 +23,23 @@ export interface UploadFilesResult {
 }
 
 const MAX_BROWSER_CONCURRENT_UPLOADS = 3
+const MAX_REGISTERED_BROWSER_TASKS = 48
 const CONCURRENCY_RETRY_DELAY_MS = 500
+
+export interface UploadRegistrationProgress {
+  total: number
+  processed: number
+  accepted: number
+  skipped: number
+  failed: number
+}
+
+export interface UploadBatchProgress extends UploadRegistrationProgress {
+  completed: number
+  failedTasks: number
+  totalBytes: number
+  uploadedBytes: number
+}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : '上传失败，请稍后重试。'
@@ -45,11 +61,18 @@ function renamed(name: string, attempt: number): string {
 
 export class UploadCoordinator {
   private tasks: CosUploadTask[] = []
+  private registration?: UploadRegistrationProgress
+  private batch?: UploadBatchProgress
+  private readonly batchTaskIds = new Set<string>()
+  private readonly batchTasks = new Map<string, CosUploadTask>()
   private readonly files = new Map<string, File>()
   private readonly uploadUrls = new Map<string, string>()
   private readonly requests = new Map<string, BrowserUploadRequest>()
+  private readonly taskRevisions = new Map<string, number>()
+  private revision = 0
   private readonly listeners = new Set<() => void>()
   private retryTimer?: ReturnType<typeof setTimeout>
+  private refreshPromise?: Promise<void>
   private disposed = false
 
   constructor(private readonly onUploadCompleted: () => void) {}
@@ -60,25 +83,58 @@ export class UploadCoordinator {
   }
 
   readonly getSnapshot = (): CosUploadTask[] => this.tasks
+  readonly getRegistrationSnapshot = (): UploadRegistrationProgress | undefined => this.registration
+  readonly getBatchSnapshot = (): UploadBatchProgress | undefined => this.batch
 
-  async refresh(schedule = true): Promise<void> {
-    const response = await listUploadTasks()
-    if (this.disposed) return
-    const incoming = new Map(response.tasks.map(task => [task.id, task]))
-    const known = new Set(this.tasks.map(task => task.id))
-    this.tasks = [
-      ...this.tasks.map(task => incoming.get(task.id)).filter((task): task is CosUploadTask => task !== undefined),
-      ...response.tasks.filter(task => !known.has(task.id)),
-    ]
-    this.emit()
-    if (schedule) this.pump()
+  refresh(schedule = true): Promise<void> {
+    if (this.refreshPromise) return this.refreshPromise
+    const revision = this.revision
+    const request = (async () => {
+      const response = await listUploadTasks()
+      if (this.disposed) return
+      const incoming = new Map(response.tasks.map(task => [task.id, task]))
+      const known = new Set(this.tasks.map(task => task.id))
+      const next = [
+        ...this.tasks.map(task => (this.taskRevisions.get(task.id) ?? 0) > revision ? task : incoming.get(task.id))
+          .filter((task): task is CosUploadTask => task !== undefined),
+        ...response.tasks.filter(task => !known.has(task.id) && (this.taskRevisions.get(task.id) ?? 0) <= revision),
+      ]
+      const live = new Set(next.map(task => task.id))
+      for (const taskId of this.taskRevisions.keys()) if (!live.has(taskId)) this.taskRevisions.delete(taskId)
+      for (const taskId of this.files.keys()) {
+        if (live.has(taskId) || this.requests.has(taskId)) continue
+        this.files.delete(taskId)
+        this.uploadUrls.delete(taskId)
+      }
+      for (const task of next) this.trackBatchTask(task)
+      if (next.length !== this.tasks.length || next.some((task, index) => !this.sameTask(task, this.tasks[index]))) {
+        this.tasks = next
+        this.emit()
+      }
+      if (schedule) this.pump()
+    })()
+    this.refreshPromise = request.finally(() => { this.refreshPromise = undefined })
+    return this.refreshPromise
   }
 
-  async addFiles(path: string, candidates: UploadCandidate[], conflictPolicy: UploadConflictPolicy): Promise<UploadFilesResult> {
+  async addFiles(
+    path: string,
+    candidates: UploadCandidate[],
+    conflictPolicy: UploadConflictPolicy,
+  ): Promise<UploadFilesResult> {
+    if (this.disposed || this.registration) throw new Error('当前上传批次仍在准备中，请稍后再添加文件。')
     const errors: string[] = []
     let accepted = 0
     let skipped = 0
+    let processed = 0
+    this.batchTaskIds.clear()
+    this.batchTasks.clear()
+    this.registration = { total: candidates.length, processed, accepted, skipped, failed: 0 }
+    this.batch = { ...this.registration, completed: 0, failedTasks: 0, totalBytes: 0, uploadedBytes: 0 }
+    this.emit()
     for (const candidate of candidates) {
+      if (this.disposed) break
+      await this.waitForCapacity()
       if (this.disposed) break
       const baseName = taskName(candidate)
       const targetPath = taskPath(path, candidate)
@@ -95,7 +151,9 @@ export class UploadCoordinator {
           })
           this.files.set(response.task.id, candidate.file)
           this.uploadUrls.set(response.task.id, response.uploadUrl)
+          this.batchTaskIds.add(response.task.id)
           this.setTask(response.task)
+          this.pump()
           accepted += 1
           break
         } catch (error) {
@@ -114,9 +172,33 @@ export class UploadCoordinator {
           break
         }
       }
+      processed += 1
+      if (processed === 1 || processed % 8 === 0 || processed === candidates.length) {
+        this.registration = { total: candidates.length, processed, accepted, skipped, failed: errors.length }
+        if (this.batch) this.batch = { ...this.batch, ...this.registration }
+        this.emit()
+        if (processed % 8 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
     }
-    if (!this.disposed) this.pump()
+    this.registration = undefined
+    this.emit()
     return { accepted, skipped, errors }
+  }
+
+  private pendingBrowserCount(): number {
+    return this.tasks.filter(task => task.source !== 'local' && this.files.has(task.id)
+      && (task.status === 'queued' || task.status === 'uploading' || task.status === 'paused')).length
+  }
+
+  private async waitForCapacity(): Promise<void> {
+    if (this.pendingBrowserCount() < MAX_REGISTERED_BROWSER_TASKS) return
+    await new Promise<void>(resolve => {
+      const unsubscribe = this.subscribe(() => {
+        if (!this.disposed && this.pendingBrowserCount() >= MAX_REGISTERED_BROWSER_TASKS) return
+        unsubscribe()
+        resolve()
+      })
+    })
   }
 
   async pause(taskId: string): Promise<void> {
@@ -146,6 +228,10 @@ export class UploadCoordinator {
     if (task?.source !== 'local') this.pump()
   }
 
+  hasBrowserFile(taskId: string): boolean {
+    return this.files.has(taskId)
+  }
+
   canRetry(taskId: string): boolean {
     const task = this.tasks.find(item => item.id === taskId)
     return task !== undefined
@@ -158,6 +244,7 @@ export class UploadCoordinator {
     this.files.delete(taskId)
     this.uploadUrls.delete(taskId)
     this.tasks = this.tasks.filter(task => task.id !== taskId)
+    this.taskRevisions.set(taskId, ++this.revision)
     this.emit()
   }
 
@@ -167,22 +254,31 @@ export class UploadCoordinator {
     for (const taskId of removed) {
       this.files.delete(taskId)
       this.uploadUrls.delete(taskId)
+      this.taskRevisions.set(taskId, ++this.revision)
     }
+    this.tasks = this.tasks.filter(task => !removed.has(task.id))
+    this.emit()
     await this.refresh()
   }
 
   dispose(): void {
+    if (this.disposed) return
     this.disposed = true
     if (this.retryTimer !== undefined) clearTimeout(this.retryTimer)
     for (const request of this.requests.values()) request.abort()
     this.requests.clear()
+    this.registration = undefined
+    this.emit()
     this.listeners.clear()
+    this.files.clear()
+    this.uploadUrls.clear()
   }
 
   private pump(): void {
     if (this.disposed) return
-    const active = this.tasks.filter(task => task.status === 'uploading' || task.status === 'paused').length
-    let available = MAX_BROWSER_CONCURRENT_UPLOADS - active
+    const localActive = this.tasks.filter(task => task.source === 'local'
+      && (task.status === 'uploading' || task.status === 'paused')).length
+    let available = MAX_BROWSER_CONCURRENT_UPLOADS - localActive - this.requests.size
     if (available <= 0) return
     for (const task of this.tasks) {
       if (available <= 0) break
@@ -198,11 +294,7 @@ export class UploadCoordinator {
     const uploadUrl = this.uploadUrls.get(taskId)
     if (!file || !uploadUrl || this.requests.has(taskId) || this.disposed) return
     this.patchTask(taskId, { status: 'uploading', error: undefined })
-    const request = uploadTaskContent(uploadUrl, file, (uploadedBytes) => {
-      const task = this.tasks.find(item => item.id === taskId)
-      if (task?.status !== 'uploading') return
-      this.patchTask(taskId, { uploadedBytes })
-    })
+    const request = uploadTaskContent(uploadUrl, file)
     this.requests.set(taskId, request)
     void this.waitForUpload(taskId, request)
   }
@@ -216,10 +308,11 @@ export class UploadCoordinator {
       this.uploadUrls.delete(taskId)
       this.onUploadCompleted()
     } catch (error) {
+      if (this.disposed) return
       concurrencyLimited = error instanceof CosStorageApiError && error.code === 'upload-concurrency-limit'
       if (concurrencyLimited) {
         this.patchTask(taskId, { status: 'queued', uploadedBytes: 0, speedBytesPerSecond: 0, error: undefined })
-      } else if (!(error instanceof CosStorageApiError && error.code === 'upload-cancelled')) {
+      } else if (this.tasks.find(task => task.id === taskId)?.status !== 'cancelled') {
         this.patchTask(taskId, { status: 'failed', error: message(error), speedBytesPerSecond: 0 })
       }
     } finally {
@@ -243,6 +336,9 @@ export class UploadCoordinator {
 
   private patchTask(taskId: string, patch: Partial<CosUploadTask>): void {
     this.tasks = this.tasks.map(task => task.id === taskId ? { ...task, ...patch } : task)
+    const updated = this.tasks.find(task => task.id === taskId)
+    if (updated) this.trackBatchTask(updated)
+    this.taskRevisions.set(taskId, ++this.revision)
     this.emit()
   }
 
@@ -251,7 +347,34 @@ export class UploadCoordinator {
     this.tasks = existing < 0
       ? [...this.tasks, task]
       : this.tasks.map(item => item.id === task.id ? task : item)
+    this.trackBatchTask(task)
+    this.taskRevisions.set(task.id, ++this.revision)
     this.emit()
+  }
+
+  private trackBatchTask(task: CosUploadTask): void {
+    if (!this.batchTaskIds.has(task.id) || !this.batch) return
+    const previous = this.batchTasks.get(task.id)
+    if (previous && this.sameTask(task, previous)) return
+    const amount = (entry: CosUploadTask) => entry.status === 'failed' || entry.status === 'cancelled' ? 0 : entry.uploadedBytes
+    this.batchTasks.set(task.id, task)
+    this.batch = {
+      ...this.batch,
+      completed: this.batch.completed + Number(task.status === 'completed') - Number(previous?.status === 'completed'),
+      failedTasks: this.batch.failedTasks + Number(task.status === 'failed') - Number(previous?.status === 'failed'),
+      totalBytes: this.batch.totalBytes + (previous ? 0 : task.size),
+      uploadedBytes: this.batch.uploadedBytes + amount(task) - (previous ? amount(previous) : 0),
+    }
+  }
+
+  private sameTask(left: CosUploadTask, right?: CosUploadTask): boolean {
+    return right !== undefined && left.id === right.id && left.name === right.name
+      && left.path === right.path && left.key === right.key && left.size === right.size
+      && left.source === right.source && left.status === right.status
+      && left.uploadedBytes === right.uploadedBytes && left.speedBytesPerSecond === right.speedBytesPerSecond
+      && left.error === right.error && left.createdAt === right.createdAt
+      && left.updatedAt === right.updatedAt && left.startedAt === right.startedAt
+      && left.finishedAt === right.finishedAt
   }
 
   private emit(): void {

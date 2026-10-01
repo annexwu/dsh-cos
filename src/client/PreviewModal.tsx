@@ -3,7 +3,6 @@ import type { CosStorageItem, CosObjectPreviewResponse, CosTextPreviewEncoding }
 import { CosStorageApiError, previewObject } from './api.ts'
 import type { StorageCopy } from './storage-copy.ts'
 import { formatBytes } from './storage-format.ts'
-import { isCiDocumentPreviewExtension } from '../preview-policy.ts'
 
 interface PreviewModalProps {
   item: CosStorageItem
@@ -15,12 +14,9 @@ interface PreviewModalProps {
   onClose: () => void
 }
 
-function errorText(error: unknown, copy: StorageCopy, item: CosStorageItem): string {
+function errorText(error: unknown, copy: StorageCopy): string {
   const message = error instanceof CosStorageApiError ? error.message : copy.previewFailed
-  if (message.includes('文本预览限制')) return copy.previewTextTooLarge
-  const extension = item.name.slice(item.name.lastIndexOf('.') + 1).toLowerCase()
-  if (isCiDocumentPreviewExtension(extension)) return copy.previewCiUnavailable
-  return message
+  return message.includes('文本预览限制') ? copy.previewTextTooLarge : message
 }
 
 const PREVIEW_FRAME_SANDBOX = 'allow-forms allow-popups allow-scripts'
@@ -94,6 +90,21 @@ function PreviewContent({ response, copy, item, onRequestDocumentPreview, textEn
   textEncoding: CosTextPreviewEncoding
   onTextEncodingChange: (encoding: CosTextPreviewEncoding) => void
 }): React.JSX.Element {
+  const [actionError, setActionError] = useState<string>()
+  const [actionPending, setActionPending] = useState(false)
+  const requestEnable = async (): Promise<void> => {
+    if (onRequestDocumentPreview === undefined || actionPending) return
+    setActionPending(true)
+    setActionError(undefined)
+    try {
+      await onRequestDocumentPreview(item)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : copy.previewFailed)
+    } finally {
+      setActionPending(false)
+    }
+  }
+
   if (response.kind === 'text') return <div className="dsh-cos-preview__text-stage">
     <label className="dsh-cos-preview__encoding">
       <span>{copy.previewTextEncoding}</span>
@@ -109,10 +120,15 @@ function PreviewContent({ response, copy, item, onRequestDocumentPreview, textEn
   if (response.kind === 'pdf' && response.url) return <iframe className="dsh-cos-preview__frame" title="PDF preview" src={response.url} />
   if (response.kind === 'ci-document' && response.url) return <iframe className="dsh-cos-preview__frame" title="Document preview" sandbox={previewFrameSandbox(response.url)} src={response.url} />
   if (response.kind === 'ci-unavailable') {
+    const notEnabled = response.reason === 'not-enabled'
+      || (response.reason === undefined && (response.message === undefined || response.message.includes('尚未开通')))
     return <PreviewNotice
       title={copy.previewCiUnavailableTitle}
-      message={copy.previewCiUnavailable}
-      action={onRequestDocumentPreview && <button type="button" onClick={() => void onRequestDocumentPreview(item)}>{copy.previewRequestEnable}</button>}
+      message={notEnabled ? copy.previewCiUnavailable : response.message ?? copy.previewFailed}
+      action={notEnabled && onRequestDocumentPreview && <>
+        <button type="button" disabled={actionPending} onClick={() => void requestEnable()}>{copy.previewRequestEnable}</button>
+        {actionError && <p role="alert">{actionError}</p>}
+      </>}
     />
   }
   return <PreviewNotice title={copy.previewUnsupportedTitle} message={response.message ?? copy.previewUnsupported} />
@@ -143,7 +159,7 @@ export function PreviewModal({ item, items, copy, onDownload, onRequestDocumentP
       setLoading(false)
     }).catch((previewError: unknown) => {
       if (!active) return
-      setError(errorText(previewError, copy, item))
+      setError(errorText(previewError, copy))
       setLoading(false)
     })
     return () => { active = false }

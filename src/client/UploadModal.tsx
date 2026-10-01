@@ -19,6 +19,7 @@ export function UploadModal({ copy, onUpload, onClose }: UploadModalProps): Reac
   const [candidates, setCandidates] = useState<UploadCandidate[]>([])
   const [dragging, setDragging] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [visibleGroups, setVisibleGroups] = useState(100)
   const [conflictPolicy, setConflictPolicy] = useState<UploadConflictPolicy>('overwrite')
   const [error, setError] = useState<string>()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -108,9 +109,11 @@ export function UploadModal({ copy, onUpload, onClose }: UploadModalProps): Reac
             onDrop={(event) => {
               event.preventDefault()
               setDragging(false)
+              if (busy) return
+              setBusy(true)
               void candidatesFromDrop(event.dataTransfer).then(append).catch((dropError: unknown) => {
                 setError(dropError instanceof Error ? dropError.message : '无法读取拖拽内容。')
-              })
+              }).finally(() => setBusy(false))
             }}
           >
             {groups.length === 0 ? (
@@ -126,7 +129,7 @@ export function UploadModal({ copy, onUpload, onClose }: UploadModalProps): Reac
                   <span>{copy.size}</span>
                   <span>{copy.removeSelection}</span>
                 </div>
-                {groups.map(group => (
+                {groups.slice(0, visibleGroups).map(group => (
                   <div key={group.id} className="dsh-cos-upload-selection__row">
                     <div>
                       <span className="dsh-cos-upload-selection__icon" aria-hidden="true">{group.files > 1 ? '▰' : '▱'}</span>
@@ -139,9 +142,13 @@ export function UploadModal({ copy, onUpload, onClose }: UploadModalProps): Reac
                     }}>×</button>
                   </div>
                 ))}
+                {groups.length > visibleGroups && <button type="button" className="dsh-cos-upload-show-more" onClick={() => setVisibleGroups(count => count + 100)}>
+                  显示更多（剩余 {groups.length - visibleGroups} 项）
+                </button>}
               </div>
             )}
           </div>
+          {busy && <div className="dsh-cos-upload-modal__reading" role="status">正在读取文件夹，请稍候…</div>}
           {error && <div className="dsh-cos-upload-modal__error" role="alert">{error}</div>}
         </div>
 

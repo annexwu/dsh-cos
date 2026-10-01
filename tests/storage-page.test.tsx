@@ -308,6 +308,35 @@ describe('COS storage page', () => {
     const lastRequest = JSON.parse(objectCalls.at(-1)?.[1].body as string)
     expect(lastRequest).toEqual({ path: '', marker: 'first.txt' })
     expect(container.textContent).toContain('second.txt')
+    expect(container.textContent).not.toContain('first.txt')
     expect(container.textContent).toContain('第 2 页 · 本页 1 项')
+    const previous = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '上一页')!
+    await act(async () => previous.click())
+    await settle()
+    expect(container.textContent).toContain('first.txt')
+    expect(container.textContent).not.toContain('second.txt')
+  })
+
+  it('clears previous-page items and disables upload when a later page fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith('/uploads/list')) return Promise.resolve(response({ ok: true, tasks: [] }))
+      const input = JSON.parse(init?.body as string) as { marker?: string }
+      if (input.marker) return Promise.resolve(new Response(JSON.stringify({ ok: false, error: { code: 'cos-list-failed', message: 'COS 翻页失败' } }), { status: 502 }))
+      return Promise.resolve(response({
+        ok: true, bucket: 'example-1250000000', region: 'ap-guangzhou', rootPrefix: '', customDomain: '', path: '',
+        items: [{ kind: 'file', name: 'first.txt', key: 'first.txt', path: 'first.txt', size: 1 }], nextMarker: 'first.txt',
+      }))
+    }))
+    await act(async () => root.render(<CosStoragePage controller={controller} />))
+    await act(async () => controller.show())
+    await settle()
+    const first = container.querySelector<HTMLElement>('[title="first.txt"]')!
+    await act(async () => first.click())
+    const next = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '下一页')!
+    await act(async () => next.click())
+    await settle()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('COS 翻页失败')
+    expect(container.querySelector('[title="first.txt"]')).toBeNull()
+    expect(container.querySelector<HTMLButtonElement>('.dsh-cos-storage-toolbar .is-primary')?.disabled).toBe(true)
   })
 })

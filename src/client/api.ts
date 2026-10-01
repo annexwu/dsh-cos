@@ -269,16 +269,11 @@ export interface BrowserUploadRequest {
   abort(): void
 }
 
-export function uploadTaskContent(
-  uploadUrl: string,
-  file: File,
-  onProgress: (uploadedBytes: number) => void,
-): BrowserUploadRequest {
+export function uploadTaskContent(uploadUrl: string, file: File): BrowserUploadRequest {
   const xhr = new XMLHttpRequest()
   const promise = new Promise<CosUploadCompleteResponse>((resolve, reject) => {
     xhr.open('POST', uploadUrl)
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
-    xhr.upload.onprogress = event => onProgress(event.loaded)
     xhr.onload = () => {
       let payload: CosStorageApiResponse<CosUploadCompleteResponse>
       try {

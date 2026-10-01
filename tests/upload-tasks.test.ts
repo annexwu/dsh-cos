@@ -108,4 +108,13 @@ describe('UploadTaskManager', () => {
     expect(manager.clearCompleted()).toBe(1)
     expect(manager.list()).toHaveLength(1)
   })
+
+  it('rejects an oversized local batch before creating any partial task records', () => {
+    const manager = createManager()
+    const existing = manager.create({ name: 'active', path: '', key: 'active', size: 1, contentType: 'text/plain', config })
+    expect(() => manager.ensureCapacity(200)).toThrow('任务记录容量不足')
+    expect(manager.list().map(task => task.id)).toEqual([existing.id])
+    expect(() => manager.ensureCapacity(199)).not.toThrow()
+    expect(() => manager.ensureCapacity(201)).toThrow('任务记录容量不足')
+  })
 })

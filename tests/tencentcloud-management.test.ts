@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SkillRegistry from '@deepseek-ai/dsh-skill'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -165,6 +167,26 @@ describe('Tencent Cloud COS management catalog', () => {
     })
     expect(JSON.stringify(result)).not.toContain('secret-id-must-not-leak')
     expect(JSON.stringify(result)).not.toContain('secret-key-must-not-leak')
+  })
+
+  it('rejects unrelated local file flags on upload and download before starting the runtime', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'dsh-cos-tool-review-'))
+    try {
+      let tool: { execute(args: unknown, exec: unknown): Promise<unknown> } | undefined
+      const ctx = { tools: { register(definition: { name: string; execute(args: unknown, exec: unknown): Promise<unknown> }) {
+        if (definition.name === 'tencentcloud_cos_storage_manage') tool = definition
+        return () => {}
+      } } } as unknown as Context
+      registerTencentCloudManagementTools(ctx, {
+        getConfig: () => ({ bucket: 'storage-1250000000', region: 'ap-guangzhou', prefix: '', customDomain: '', attachmentEnabled: true, attachmentDirectory: 'dsh-attachments/' }),
+        getCredentials: async () => ({ secretId: 'test', secretKey: 'test' }),
+      })
+      const exec = { agent: { session: { header: { cwd } } }, signal: new AbortController().signal } as never
+      await expect(tool!.execute({ Action: 'upload', Parameters: { file: 'report.txt', output: '../outside' } }, exec)).rejects.toThrow('only permitted for download')
+      await expect(tool!.execute({ Action: 'download', Parameters: { key: 'report.txt', file: '../outside', output: 'report.txt' } }, exec)).rejects.toThrow('only permitted for upload')
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
   })
 
   it('registers a model and user invocable COS Skill backed by the bundled guidance', async () => {

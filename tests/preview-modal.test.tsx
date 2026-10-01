@@ -71,6 +71,31 @@ describe('PreviewModal', () => {
     expect(container.querySelector('.dsh-cos-preview__body .dsh-cos-preview__close')).toBeNull()
   })
 
+  it('shows a navigation failure instead of silently ignoring the AI enablement click', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, kind: 'ci-unavailable' }), {
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    const onRequestDocumentPreview = vi.fn().mockRejectedValue(new Error('当前没有打开的会话，请先选择会话。'))
+    await act(async () => root.render(<PreviewModal
+      item={item}
+      items={[item]}
+      copy={getStorageCopy()}
+      onDownload={vi.fn()}
+      onRequestDocumentPreview={onRequestDocumentPreview}
+      onSelect={vi.fn()}
+      onClose={vi.fn()}
+    />))
+    await settle()
+
+    const requestEnable = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === '让 AI 协助开通')!
+    await act(async () => requestEnable.click())
+
+    expect(onRequestDocumentPreview).toHaveBeenCalledWith(item)
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('当前没有打开的会话')
+    expect(requestEnable.disabled).toBe(false)
+  })
+
   it('reloads text content with the selected encoding', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, kind: 'text', text: '你好' }), {
       headers: { 'Content-Type': 'application/json' },
@@ -118,5 +143,31 @@ describe('PreviewModal', () => {
     const notice = container.querySelector<HTMLElement>('.dsh-cos-preview__notice')
     expect(notice?.textContent).toContain('暂不支持预览')
     expect(notice?.textContent).toContain('可下载后在本地查看')
+  })
+
+  it('does not suggest enabling the service for a temporary COS preview failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true, kind: 'ci-unavailable', reason: 'unavailable', message: '文档预览服务当前不可用。',
+    }), { headers: { 'Content-Type': 'application/json' } })))
+    await act(async () => root.render(<PreviewModal
+      item={item} items={[item]} copy={getStorageCopy()} onDownload={vi.fn()}
+      onRequestDocumentPreview={vi.fn()} onSelect={vi.fn()} onClose={vi.fn()}
+    />))
+    await settle()
+    expect(container.querySelector('.dsh-cos-preview__notice')?.textContent).toContain('当前不可用')
+    expect(container.textContent).not.toContain('让 AI 协助开通')
+  })
+
+  it('shows the actual COS error instead of claiming preview has not been enabled', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: false, error: { code: 'permission-denied', message: '没有文档预览权限' },
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } })))
+    await act(async () => root.render(<PreviewModal
+      item={item} items={[item]} copy={getStorageCopy()} onDownload={vi.fn()}
+      onRequestDocumentPreview={vi.fn()} onSelect={vi.fn()} onClose={vi.fn()}
+    />))
+    await settle()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('没有文档预览权限')
+    expect(container.textContent).not.toContain('尚未开通')
   })
 })

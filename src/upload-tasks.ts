@@ -44,6 +44,13 @@ export class UploadTaskManager {
     this.localTaskScheduler = scheduler
   }
 
+  ensureCapacity(count: number): void {
+    this.makeRoom()
+    if (!Number.isSafeInteger(count) || count < 0 || count > MAX_TASKS - this.tasks.size) {
+      throw new HttpError(429, 'too-many-tasks', '任务记录容量不足，请先清理已完成或失败的任务，或缩小本次选择范围。')
+    }
+  }
+
   create(input: NewUploadTask): CosUploadTask {
     this.makeRoom()
     if (this.tasks.size >= MAX_TASKS) {

@@ -26,6 +26,7 @@ import type { UploadCandidate } from './upload-selection.ts'
 
 export interface CosStoragePageProps {
   controller: CosStorageController
+  uploadCoordinator?: UploadCoordinator
   onStartConversation?: (item: CosStorageItem) => Promise<void>
   onRequestDocumentPreview?: (bucket: string) => Promise<void>
 }
@@ -93,7 +94,7 @@ async function copyText(value: string): Promise<void> {
   if (!copied) throw new Error('无法复制链接，请检查浏览器权限。')
 }
 
-export function CosStoragePage({ controller, onStartConversation, onRequestDocumentPreview }: CosStoragePageProps): React.JSX.Element {
+export function CosStoragePage({ controller, uploadCoordinator: sharedUploads, onStartConversation, onRequestDocumentPreview }: CosStoragePageProps): React.JSX.Element {
   const copy = useMemo(getCopy, [])
   const storageCopy = useMemo(getStorageCopy, [])
   const [open, setOpen] = useState(controller.getSnapshot().open)
@@ -127,10 +128,15 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
   const selectionLayoutRef = useRef<SelectionLayout>()
   const gridRef = useRef<HTMLDivElement>(null)
   const suppressItemClickRef = useRef(false)
-  const uploadCoordinator = useMemo(() => new UploadCoordinator(() => undefined), [])
+  const localUploads = useMemo(() => new UploadCoordinator(() => undefined), [])
+  const uploadCoordinator = sharedUploads ?? localUploads
   const uploadTasks = useSyncExternalStore(uploadCoordinator.subscribe, uploadCoordinator.getSnapshot)
-  const activeTransferCount = uploadTasks.filter(task => task.status === 'queued' || task.status === 'uploading' || task.status === 'paused').length
-  const hasTransferQueue = transferQueueEnabled && uploadTasks.length > 0
+  const registration = useSyncExternalStore(uploadCoordinator.subscribe, uploadCoordinator.getRegistrationSnapshot)
+  const batch = useSyncExternalStore(uploadCoordinator.subscribe, uploadCoordinator.getBatchSnapshot)
+  const activeTransferCount = uploadTasks.filter(task => task.status === 'uploading' || task.status === 'paused'
+    || (task.status === 'queued' && (task.source === 'local' || uploadCoordinator.hasBrowserFile(task.id)))).length
+  const hasStalledQueue = uploadTasks.some(task => task.status === 'queued' && task.source !== 'local' && !uploadCoordinator.hasBrowserFile(task.id))
+  const hasTransferQueue = transferQueueEnabled && (uploadTasks.length > 0 || registration !== undefined)
 
   useEffect(() => {
     if (notice?.kind !== 'success') return
@@ -180,10 +186,14 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
   }, [hasTransferQueue])
 
   useEffect(() => {
-    if (hasTransferQueue && activeTransferCount === 0 && taskDrawerOpen) setTaskDrawerCollapsed(true)
-  }, [activeTransferCount, hasTransferQueue, taskDrawerOpen])
+    if (hasTransferQueue && registration === undefined && activeTransferCount === 0 && !hasStalledQueue && taskDrawerOpen) setTaskDrawerCollapsed(true)
+  }, [activeTransferCount, hasStalledQueue, hasTransferQueue, registration, taskDrawerOpen])
 
-  useEffect(() => () => uploadCoordinator.dispose(), [uploadCoordinator])
+  useEffect(() => () => localUploads.dispose(), [localUploads])
+
+  useEffect(() => {
+    if (uploadTasks.length > 0 || registration !== undefined) setTransferQueueEnabled(true)
+  }, [registration, uploadTasks])
 
   useEffect(() => {
     const hasActiveUpload = uploadTasks.some(task => task.status === 'queued' || task.status === 'uploading' || task.status === 'paused')
@@ -201,8 +211,11 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
     if (!open) return
     void uploadCoordinator.refresh().catch(() => {})
     const interval = window.setInterval(() => {
-      const active = uploadCoordinator.getSnapshot().some(task => task.status === 'queued' || task.status === 'uploading')
-      if (active || taskDrawerOpen) void uploadCoordinator.refresh().catch(() => {})
+      const active = uploadCoordinator.getSnapshot().some(task => task.status === 'uploading'
+        || (task.status === 'queued' && (task.source === 'local' || uploadCoordinator.hasBrowserFile(task.id))))
+      if (active || uploadCoordinator.getRegistrationSnapshot() !== undefined || taskDrawerOpen) {
+        void uploadCoordinator.refresh().catch(() => {})
+      }
     }, 800)
     return () => window.clearInterval(interval)
   }, [open, taskDrawerOpen, uploadCoordinator])
@@ -218,7 +231,11 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
     }).then((response) => {
       if (active) setData(response)
     }).catch((loadError: unknown) => {
-      if (active) setError(loadFailure(loadError))
+      if (active) {
+        setData(undefined)
+        setError(loadFailure(loadError))
+        setSelectedKeys(new Set())
+      }
     }).finally(() => {
       if (active) setLoading(false)
     })
@@ -369,6 +386,9 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
     const nextMarker = data.nextMarker
     setMarkers(current => [...current.slice(0, pageIndex + 1), nextMarker])
     setPageIndex(current => current + 1)
+    setData(undefined)
+    setError(undefined)
+    setSelectedKeys(new Set())
     setMenuKey(undefined)
   }
 
@@ -379,12 +399,15 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
   const handleUpload = (candidates: UploadCandidate[], conflictPolicy: UploadConflictPolicy) => {
     if (candidates.length === 0) return
     setNotice(undefined)
+    setTransferQueueEnabled(true)
+    setTaskDrawerCollapsed(false)
+    setTaskDrawerOpen(true)
     void uploadCoordinator.addFiles(path, candidates, conflictPolicy).then((result) => {
-      if (result.errors.length > 0) setNotice({ kind: 'error', text: result.errors.join('\n') })
-      else if (result.accepted > 0) {
-        setTransferQueueEnabled(true)
-        setTaskDrawerCollapsed(false)
-        setTaskDrawerOpen(true)
+      if (result.errors.length > 0) {
+        const examples = result.errors.slice(0, 5).join('\n')
+        const remaining = result.errors.length - 5
+        setNotice({ kind: 'error', text: remaining > 0 ? `${examples}\n另有 ${remaining} 个文件准备失败。` : examples })
+      } else if (result.accepted > 0) {
         setNotice({ kind: 'success', text: result.skipped > 0 ? `${storageCopy.uploadAccepted(result.accepted)} ${storageCopy.uploadSkipped(result.skipped)}` : storageCopy.uploadAccepted(result.accepted) })
       } else if (result.skipped > 0) {
         setNotice({ kind: 'success', text: storageCopy.uploadSkipped(result.skipped) })
@@ -517,7 +540,7 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
 
       <section className="dsh-cos-storage-toolbar" aria-label="toolbar">
         <div className="dsh-cos-storage-toolbar__group">
-          <button type="button" className="is-primary" disabled={!data} onClick={(event) => {
+          <button type="button" className="is-primary" disabled={!data || registration !== undefined} onClick={(event) => {
             event.stopPropagation()
             setUploadModalOpen(true)
           }}><ToolbarIcon kind="upload" />{storageCopy.upload}</button>
@@ -752,6 +775,9 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
         <div>
           <button type="button" disabled={loading || pageIndex === 0} onClick={() => {
             setPageIndex(current => Math.max(0, current - 1))
+            setData(undefined)
+            setError(undefined)
+            setSelectedKeys(new Set())
             setMenuKey(undefined)
           }}>{storageCopy.previousPage}</button>
           <button type="button" disabled={loading || !data?.nextMarker} onClick={goNext}>{storageCopy.nextPage}</button>
@@ -853,10 +879,13 @@ export function CosStoragePage({ controller, onStartConversation, onRequestDocum
       {taskDrawerOpen && hasTransferQueue && (
         <TaskDrawer
           tasks={uploadTasks}
+          registration={registration}
+          batch={batch}
           copy={storageCopy}
           collapsed={taskDrawerCollapsed}
           onCollapsedChange={setTaskDrawerCollapsed}
           canRetry={taskId => uploadCoordinator.canRetry(taskId)}
+          hasBrowserFile={taskId => uploadCoordinator.hasBrowserFile(taskId)}
           onPause={taskId => uploadCoordinator.pause(taskId)}
           onResume={taskId => uploadCoordinator.resume(taskId)}
           onCancel={taskId => uploadCoordinator.cancel(taskId)}

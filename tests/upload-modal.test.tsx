@@ -56,4 +56,22 @@ describe('UploadModal', () => {
     expect(onUpload.mock.calls[0][0]).toHaveLength(2)
     expect(onUpload.mock.calls[0][1]).toBe('rename')
   })
+
+  it('shows only 100 selection rows at first while keeping all 180 files selected', async () => {
+    const onUpload = vi.fn().mockResolvedValue(undefined)
+    await act(async () => root.render(<UploadModal copy={getStorageCopy()} onUpload={onUpload} onClose={vi.fn()} />))
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      value: Array.from({ length: 180 }, (_, index) => new File([String(index)], `${index}.txt`)),
+    })
+    await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+    expect(container.querySelectorAll('.dsh-cos-upload-selection__row')).toHaveLength(100)
+    expect(container.textContent).toContain('180 个文件')
+    await act(async () => container.querySelector<HTMLButtonElement>('.dsh-cos-upload-show-more')?.click())
+    expect(container.querySelectorAll('.dsh-cos-upload-selection__row')).toHaveLength(180)
+    const upload = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === '开始上传')!
+    await act(async () => upload.click())
+    expect(onUpload.mock.calls[0]?.[0]).toHaveLength(180)
+  })
 })

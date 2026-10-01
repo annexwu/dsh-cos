@@ -27,6 +27,8 @@ const API_BROWSE_LOCAL_UPLOAD = '/api/dsh-cos/local-upload/browse'
 const API_START_LOCAL_UPLOAD = '/api/dsh-cos/local-upload/start'
 const MAX_DIRECTORY_ENTRIES = 1_000
 const MAX_SELECTED_ENTRIES = 100
+const MAX_LOCAL_UPLOAD_FILES = 200
+const MAX_LOCAL_HEAD_CONCURRENCY = 8
 const MAX_LOCAL_CONCURRENT_UPLOADS = 3
 const ATTACHMENT_DIRECTORY = '.dsh-cos'
 
@@ -245,6 +247,9 @@ async function collectFiles(root: string, name: string, roots: string[], output:
   const info = await import('node:fs/promises').then(({ stat }) => stat(sourcePath))
   const relativePath = prefix === '' ? name : `${prefix}/${name}`
   if (info.isFile()) {
+    if (output.length >= MAX_LOCAL_UPLOAD_FILES) {
+      throw new HttpError(400, 'too-many-local-files', '本次本机选择超过 200 个文件，请分批上传。')
+    }
     output.push({ sourcePath, relativePath, size: info.size })
     return
   }
@@ -407,27 +412,33 @@ export function registerLocalUploadRoutes(
         const conflicts: string[] = []
         const plans: Array<{ file: SelectedLocalFile; name: string; path: string; key: string }> = []
         let skipped = 0
-        for (const file of files) {
-          const segments = file.relativePath.split('/')
-          const name = normalizeObjectName(segments.pop()!, '文件名')
-          const path = `${destinationPath}${segments.length > 0 ? `${segments.map(segment => normalizeObjectName(segment, '目录名')).join('/')}/` : ''}`
-          const key = buildObjectKey(config.prefix, path, name)
-          const exists = await cosObjectExists(config, credentials, key)
-          if (exists && input.conflictMode === 'ask') {
-            conflicts.push(`${path}${name}`)
-            continue
+        for (let offset = 0; offset < files.length; offset += MAX_LOCAL_HEAD_CONCURRENCY) {
+          const checked = await Promise.all(files.slice(offset, offset + MAX_LOCAL_HEAD_CONCURRENCY).map(async file => {
+            const segments = file.relativePath.split('/')
+            const name = normalizeObjectName(segments.pop()!, '文件名')
+            const path = `${destinationPath}${segments.length > 0 ? `${segments.map(segment => normalizeObjectName(segment, '目录名')).join('/')}/` : ''}`
+            const key = buildObjectKey(config.prefix, path, name)
+            const exists = input.conflictMode !== 'overwrite' && await cosObjectExists(config, credentials, key)
+            return { file, name, path, key, exists }
+          }))
+          for (const { file, name, path, key, exists } of checked) {
+            if (exists && input.conflictMode === 'ask') {
+              conflicts.push(`${path}${name}`)
+              continue
+            }
+            if (exists && input.conflictMode === 'skip') {
+              skipped += 1
+              continue
+            }
+            plans.push({ file, name, path, key })
           }
-          if (exists && input.conflictMode === 'skip') {
-            skipped += 1
-            continue
-          }
-          plans.push({ file, name, path, key })
         }
         if (conflicts.length > 0) {
           const body: StartLocalUploadResponse = { ok: true, accepted: 0, skipped: 0, conflicts, tasks: [] }
           sendJson(response, 200, body)
           return
         }
+        tasks.ensureCapacity(plans.length)
         const tasksToStart = plans.map(({ file, name, path, key }) => {
           const task = tasks.create({
             name,
