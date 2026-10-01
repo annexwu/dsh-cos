@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { inject as hostInject } from '../src/index.ts'
+import buildConfig from '../tsdown.config.ts'
 
 type PackageManifest = {
   name: string
@@ -53,6 +54,12 @@ describe('public npm package contract', () => {
     expect(bundlePatch).toContain("name: '@deepseek-ai/dsh-attachment-local'")
     expect(bundlePatch).toContain('disabled: true')
     expect(hostInject).not.toContain('sessions')
+  })
+
+  it('bundles COS SDK dependencies into the Host entry for npm installations', () => {
+    const host = buildConfig[0]
+    expect(host?.external).not.toContain('cos-nodejs-sdk-v5')
+    expect(host?.noExternal).toEqual(expect.arrayContaining(['cos-nodejs-sdk-v5', 'cos-request', 'tough-cookie', 'punycode']))
   })
 
   it('builds package artifacts before GitHub or npm installation', () => {

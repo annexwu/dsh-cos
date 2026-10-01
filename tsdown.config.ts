@@ -33,8 +33,8 @@ const host: UserConfig = {
     '@deepseek-ai/dsh-home-paths',
     '@deepseek-ai/dsh-skill',
     '@deepseek-ai/dsh-tools',
-    'cos-nodejs-sdk-v5',
   ],
+  noExternal: ['cos-nodejs-sdk-v5', 'cos-request', 'tough-cookie', 'psl', 'punycode'],
 }
 
 const client: UserConfig = {
