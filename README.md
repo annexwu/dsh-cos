@@ -1,6 +1,6 @@
 # DSH COS 云存储插件
 
-腾讯云 COS 云存储的 DeepSeek Harness Web 插件。`0.3.1` 修复了 `0.3.0` 在 DSH `0.2.0-rc.2` 中从 npm 安装后无法激活的问题；DSH `0.1.2` 用户请继续使用插件 `0.2.1`。
+腾讯云 COS 云存储的 DeepSeek Harness 插件。`0.3.2` 修复了桌面客户端云存储页上传时代理不提供 `Content-Length` 导致的错误；`0.3.1` 修复了 `0.3.0` 在 DSH `0.2.0-rc.2` 中从 npm 安装后无法激活的问题。DSH `0.1.2` 用户请继续使用插件 `0.2.1`。
 
 ## 界面预览
 
@@ -38,21 +38,21 @@
 
 ### 从 npm 安装（推荐）
 
-`0.3.1` 发布后，可将该版本安装到 DSH `0.2.0-rc.2` 的 `web` profile：
+`0.3.2` 发布后，可将该版本安装到 DSH `0.2.0-rc.2` 的 `web` profile：
 
 ```bash
-dsh plugin --profile web add dsh-cos@0.3.1
+dsh plugin --profile web add dsh-cos@0.3.2
 dsh web
 ```
 
 如果通过 DSH 源码仓库运行命令，将上面的 `dsh` 换成 `pnpm dsh`：
 
 ```bash
-pnpm dsh plugin --profile web add dsh-cos@0.3.1
+pnpm dsh plugin --profile web add dsh-cos@0.3.2
 pnpm dsh web
 ```
 
-安装完成后必须重启 `dsh web`，侧边栏才会出现“COS 云存储”入口。
+安装完成后必须重启 `dsh web`，侧边栏才会出现“COS 云存储”入口。DSH 桌面客户端使用独立的 `desktop` profile：请在桌面客户端的“插件”页面安装 `dsh-cos@0.3.2` 并重启客户端；全局 `dsh plugin --profile web` 不会更新桌面客户端的插件。
 
 ### 配置并使用
 

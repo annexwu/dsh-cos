@@ -180,9 +180,9 @@ function taskIdFromUrl(request: IncomingMessage): string {
   return taskId
 }
 
-function assertUploadLength(request: IncomingMessage, expected: number): void {
+export function assertUploadLength(request: Pick<IncomingMessage, 'headers'>, expected: number): void {
   const value = request.headers['content-length']
-  if (value === undefined || !/^\d+$/.test(value) || Number(value) !== expected) {
+  if (value !== undefined && (!/^\d+$/.test(value) || Number(value) !== expected)) {
     throw new HttpError(400, 'invalid-content-length', '上传内容大小与任务不一致。')
   }
 }

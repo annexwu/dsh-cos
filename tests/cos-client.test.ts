@@ -1,5 +1,9 @@
+import { Readable } from 'node:stream'
+import COS from 'cos-nodejs-sdk-v5'
 import { describe, expect, it, vi } from 'vitest'
-import { assertCosFolderAttachmentBudget, createCosClient, decodeCosObjectText, mapCosStorageItems, multipartChunkSize, nextCosListMarker, probeCosDocumentPreview } from '../src/cos-client.ts'
+import { assertCosFolderAttachmentBudget, createCosClient, decodeCosObjectText, mapCosStorageItems, multipartChunkSize, nextCosListMarker, PartStreamReader, probeCosDocumentPreview, uploadCosObject } from '../src/cos-client.ts'
+import { DEFAULT_CONFIG } from '../src/config.ts'
+import { assertUploadLength } from '../src/operation-routes.ts'
 import { buildDshCosUserAgent, DSH_COS_USER_AGENT } from '../src/user-agent.ts'
 
 describe('COS object list mapping', () => {
@@ -87,6 +91,84 @@ describe('COS object list mapping', () => {
       }],
     })
     expect(items.map(item => item.name)).toEqual(['folder'])
+  })
+})
+
+describe('streamed upload size validation', () => {
+  it('accepts missing Content-Length from the desktop proxy, but rejects a declared mismatch', () => {
+    expect(() => assertUploadLength({ headers: {} }, 4)).not.toThrow()
+    expect(() => assertUploadLength({ headers: { 'content-length': '4' } }, 4)).not.toThrow()
+    expect(() => assertUploadLength({ headers: { 'content-length': '0' } }, 4)).toThrow('上传内容大小与任务不一致')
+    expect(() => assertUploadLength({ headers: { 'content-length': 'invalid' } }, 4)).toThrow('上传内容大小与任务不一致')
+  })
+
+  it('checks exact bytes across chunks and multipart boundaries without relying on HTTP headers', async () => {
+    const reader = new PartStreamReader(Readable.from([Buffer.from('ab'), Buffer.from('cdef')]))
+    const first: Buffer[] = []
+    for await (const chunk of reader.read(3, async () => {}, () => {})) first.push(chunk)
+    const second: Buffer[] = []
+    for await (const chunk of reader.read(3, async () => {}, () => {})) second.push(chunk)
+    expect(Buffer.concat(first).toString()).toBe('abc')
+    expect(Buffer.concat(second).toString()).toBe('def')
+    await expect(reader.assertComplete()).resolves.toBeUndefined()
+  })
+
+  it('commits only after the desktop-forwarded stream matches its registered task size', async () => {
+    const init = vi.spyOn(COS.prototype, 'multipartInit').mockResolvedValue({ UploadId: 'test' } as COS.MultipartInitResult)
+    const part = vi.spyOn(COS.prototype, 'multipartUpload').mockImplementation(async ({ Body }) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of Body as Readable) chunks.push(Buffer.from(chunk as Uint8Array))
+      return { ETag: Buffer.concat(chunks).toString() } as COS.MultipartUploadResult
+    })
+    const commit = vi.spyOn(COS.prototype, 'multipartComplete').mockResolvedValue({} as COS.MultipartCompleteResult)
+    const abort = vi.spyOn(COS.prototype, 'multipartAbort').mockResolvedValue({} as COS.MultipartAbortResult)
+    const put = vi.spyOn(COS.prototype, 'putObject').mockResolvedValue({} as COS.PutObjectResult)
+    const options = { config: { ...DEFAULT_CONFIG, bucket: 'test-123', region: 'ap-guangzhou' },
+      credentials: { secretId: 'test', secretKey: 'test' }, key: 'test.txt', contentType: 'text/plain',
+      onControlReady: () => {}, onProgress: () => {} }
+    try {
+      await uploadCosObject({ ...options, body: Readable.from([Buffer.from('data')]), size: 4 })
+      expect(init).toHaveBeenCalledOnce()
+      expect(part).toHaveBeenCalledOnce()
+      expect(commit).toHaveBeenCalledOnce()
+      expect(abort).not.toHaveBeenCalled()
+
+      commit.mockClear()
+      await expect(uploadCosObject({ ...options, body: Readable.from([Buffer.from('data'), Buffer.from('extra')]), size: 4 }))
+        .rejects.toThrow('上传内容大小与任务不一致')
+      expect(commit).not.toHaveBeenCalled()
+      expect(abort).toHaveBeenCalledOnce()
+
+      abort.mockClear()
+      await expect(uploadCosObject({ ...options, body: Readable.from([Buffer.from('dat')]), size: 4 }))
+        .rejects.toThrow('上传内容大小与任务不一致')
+      expect(commit).not.toHaveBeenCalled()
+      expect(abort).toHaveBeenCalledOnce()
+
+      await uploadCosObject({ ...options, body: Readable.from([]), size: 0 })
+      expect(put).toHaveBeenCalledOnce()
+      put.mockClear()
+      await expect(uploadCosObject({ ...options, body: Readable.from([Buffer.from('extra')]), size: 0 }))
+        .rejects.toThrow('上传内容大小与任务不一致')
+      expect(put).not.toHaveBeenCalled()
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('rejects shorter or longer streams before committing an object', async () => {
+    const short = new PartStreamReader(Readable.from([Buffer.from('ab')]))
+    await expect((async () => {
+      for await (const chunk of short.read(3, async () => {}, () => {})) void chunk
+    })()).rejects.toThrow('上传内容大小与任务不一致')
+
+    for (const chunks of [[Buffer.from('abcde')], [Buffer.from('abcd'), Buffer.from('e')]]) {
+      const long = new PartStreamReader(Readable.from(chunks))
+      for await (const chunk of long.read(4, async () => {}, () => {})) void chunk
+      await expect(long.assertComplete()).rejects.toThrow('上传内容大小与任务不一致')
+    }
+    await expect(new PartStreamReader(Readable.from([Buffer.from('e')])).assertComplete())
+      .rejects.toThrow('上传内容大小与任务不一致')
   })
 })
 

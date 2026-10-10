@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream'
 import COS from 'cos-nodejs-sdk-v5'
 import type { Config } from './config.ts'
+import { HttpError } from './http.ts'
 import type { CosStorageItem } from './protocol.ts'
 import { DSH_COS_USER_AGENT } from './user-agent.ts'
 
@@ -226,11 +227,11 @@ export interface UploadCosObjectOptions {
   onProgress: (uploadedBytes: number) => void
 }
 
-class PartStreamReader {
+export class PartStreamReader {
   private readonly iterator: AsyncIterator<unknown>
   private remainder?: Buffer
 
-  constructor(private readonly source: Readable) {
+  constructor(source: Readable) {
     this.iterator = source[Symbol.asyncIterator]()
   }
 
@@ -245,7 +246,7 @@ class PartStreamReader {
       let buffer = this.remainder
       if (buffer === undefined || buffer.length === 0) {
         const next = await this.iterator.next()
-        if (next.done) throw new Error('upload stream ended before Content-Length')
+        if (next.done) throw new HttpError(400, 'invalid-content-length', '上传内容大小与任务不一致。')
         buffer = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as Uint8Array)
       }
       const size = Math.min(buffer.length, remaining)
@@ -254,6 +255,15 @@ class PartStreamReader {
       remaining -= size
       onBytes(size)
       yield current
+    }
+  }
+
+  async assertComplete(): Promise<void> {
+    if (this.remainder?.length) throw new HttpError(400, 'invalid-content-length', '上传内容大小与任务不一致。')
+    for (let next = await this.iterator.next(); !next.done; next = await this.iterator.next()) {
+      if ((next.value as Uint8Array).byteLength > 0) {
+        throw new HttpError(400, 'invalid-content-length', '上传内容大小与任务不一致。')
+      }
     }
   }
 }
@@ -298,7 +308,9 @@ export async function uploadCosObject(options: UploadCosObjectOptions): Promise<
     },
   })
 
+  const reader = new PartStreamReader(options.body)
   if (options.size === 0) {
+    await reader.assertComplete()
     await cos.putObject({
       Bucket: options.config.bucket,
       Region: options.config.region,
@@ -317,7 +329,6 @@ export async function uploadCosObject(options: UploadCosObjectOptions): Promise<
     Key: options.key,
     ContentType: options.contentType,
   })
-  const reader = new PartStreamReader(options.body)
   const parts: COS.Part[] = []
   const chunkSize = multipartChunkSize(options.size)
   let consumed = 0
@@ -341,6 +352,7 @@ export async function uploadCosObject(options: UploadCosObjectOptions): Promise<
       parts.push({ PartNumber: partNumber, ETag: result.ETag })
     }
     await waitIfPaused()
+    await reader.assertComplete()
     await cos.multipartComplete({
       Bucket: options.config.bucket,
       Region: options.config.region,
